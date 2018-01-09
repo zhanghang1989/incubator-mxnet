@@ -1,9 +1,9 @@
 [submodule "mshadow"]
 	path = mshadow
-	url = https://github.com/dmlc/mshadow.
+	url = https://github.com/dmlc/mshadow.git
 [submodule "dmlc-core"]
 	path = dmlc-core
-	url = https://github.com/dmlc/dmlc-core
+	url = https://github.com/dmlc/dmlc-core.git
 [submodule "ps-lite"]
 	path = ps-lite
 	url = https://github.com/dmlc/ps-lite
@@ -21,4 +21,4 @@
 	url = https://github.com/llvm-mirror/openmp
 [submodule "3rdparty/googletest"]
 	path = 3rdparty/googletest
-	url = https://github.com/google/googletest
+	url = https://github.com/google/googletest.git

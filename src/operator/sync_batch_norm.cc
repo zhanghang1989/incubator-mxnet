@@ -91,8 +91,6 @@ then set ``gamma`` to 1 and its gradient to 0.
 .add_argument("data", "NDArray-or-Symbol", "Input data to batch normalization")
 .add_argument("gamma", "NDArray-or-Symbol", "gamma array")
 .add_argument("beta", "NDArray-or-Symbol", "beta array")
-.add_argument("mean", "NDArray-or-Symbol", "mean array")
-.add_argument("std", "NDArray-or-Symbol", "std array")
 .add_arguments(SyncBatchNormParam::__FIELDS__());
 
 NNVM_REGISTER_OP(SyncBatchNorm)
