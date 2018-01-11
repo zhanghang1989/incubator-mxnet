@@ -28,7 +28,7 @@ import numpy as np
 
 from ..block import Block, HybridBlock
 from ..utils import _indent
-from ... import nd, sym, test_utils, autograd
+from ... import nd, sym, kv, test_utils, autograd
 
 
 class Sequential(Block):
@@ -573,43 +573,47 @@ class SharedT:
         self.mutex = threading.Lock()
         self.all_tasks_done = threading.Condition(self.mutex)
         self.nGPUs = nGPUs
-        self.kv = kvstore.create('device')
+        self.kv = kv.create('local')
         self.kv.init('key', [nd.zeros(nchs)])
-        self.out = nd.zeros(nchs)
-        self.clear()
+        self._clear()
 
-    def clear(self):
+    def _clear(self):
         self.list = []
         self.push_tasks = self.nGPUs
         self.reduce_tasks = self.nGPUs
 
     def push(self, t):
         with self.mutex:
+            if self.push_tasks == 0:
+                self._clear()
             self.list.append(t)
+
         with self.all_tasks_done:
             self.push_tasks -= 1
-            if self.push_tasks == 0:
-                self.all_tasks_done.notify_all()
 
     def join(self):
         with self.all_tasks_done:
+            if self.push_tasks == 0:
+                self.all_tasks_done.notify_all()
             while self.push_tasks:
                 self.all_tasks_done.wait()
-        self.reduce()
+        self._reduce()
 
-    def reduce(self):
+    def _reduce(self):
         if self.reduce_tasks == self.nGPUs:
-            self.kv.push('key',self.list)
-            self.kv.pull('key', out=self.out)
-        with self.all_tasks_done:
-            self.reduce_tasks -= 1
-            if self.reduce_tasks == 0:
-                self.all_tasks_done.notify_all()
-            while self.reduce_tasks:
-                self.all_tasks_done.wait()
+            with self.all_tasks_done:
+                self.reduce_tasks -= 1
+                self.kv.push('key',self.list)
+        else:
+            with self.all_tasks_done:
+                self.reduce_tasks -= 1
+                if self.reduce_tasks == 0:
+                    self.all_tasks_done.notify_all()
+                while self.reduce_tasks:
+                    self.all_tasks_done.wait()
 
-    def get(self, ctx):
-        return self.out.as_in_context(ctx)
+    def get(self, out):
+        self.kv.pull('key', out=out)
 
     def test(self):
         print('self.list', self.list)
@@ -621,16 +625,18 @@ class SharedT:
         return 'SharedT'
 
 
-class SyncBatchNorm(Block):
-    def __init__(self, axis=1, momentum=0.9, epsilon=1e-5, center=True, scale=True,
+class SyncBatchNorm(HybridBlock):
+    def __init__(self, momentum=0.9, epsilon=1e-5, center=True, scale=True,
                  beta_initializer='zeros', gamma_initializer='ones',
                  running_mean_initializer='zeros', running_variance_initializer='ones',
                  in_channels=0, **kwargs):
         super(SyncBatchNorm, self).__init__(**kwargs)
-        self._kwargs = {'axis': axis, 'eps': epsilon, 'momentum': momentum,
+        self._kwargs = {'eps': epsilon, 'momentum': momentum,
                         'fix_gamma': not scale}
         if in_channels != 0:
             self.in_channels = in_channels
+        self.eps = epsilon
+        self.momentum =  nd.array([momentum])
 
         self.gamma = self.params.get('gamma', grad_req='write' if scale else 'null',
                                      shape=(in_channels,), init=gamma_initializer,
@@ -653,7 +659,8 @@ class SyncBatchNorm(Block):
         nGPUs = self._get_nGPUs()
         # considerring CPU case
         nGPUs = nGPUs if nGPUs > 0 else 1
-        self.xsum, self.xsquare = SharedT(nGPUs, in_channels), SharedT(nGPUs, in_channels)
+        self.xsum = SharedT(nGPUs, in_channels)
+        self.xsquare = SharedT(nGPUs, in_channels)
 
     def _get_nGPUs(self):
         """
@@ -670,37 +677,39 @@ class SyncBatchNorm(Block):
             dtype = 'float32'
         super(BatchNorm, self).cast(dtype)
 
-    def forward(self):
-        if autograd.is_training():
+    def hybrid_forward(self, F, x, gamma, beta, running_mean, running_var):
+        if True:#autograd.is_training():
             # TODO implement an efficient operator for this
             isum = x.sum(3).sum(2).sum(0)
             isquare = x.square().sum(3).sum(2).sum(0)
             # reduce sum
-            self.xsum.clear()
-            self.xsquare.clear()
             self.xsum.push(isum)
             self.xsquare.push(isquare)
             self.xsum.join()
             self.xsquare.join()
-            xsum = self.xsum.get(x.context())
-            xsquare = self.xsquare.get(x.context())
-            N = len(self.xsum)*input.size(0)*input.size(2)*input.size(3)
+            self.xsum.get(isum)
+            self.xsquare.get(isquare)
+            N = len(self.xsum)*x.shape[0]*x.shape[2]*x.shape[3]
             # calc mean and var
-            mean = xsum / N
-            sumvar = xsquare - xsum * xsum / N
+            mean = isum / N
+            sumvar = isquare - isum * isum / N
             unbias_var = sumvar / (N - 1)
             std = (sumvar / N + self.eps).sqrt()
             # update running mean and var
-            self.running_mean = (1-self.momentum) * self.running_mean \
-                + self.momentum * mean.data
-            self.running_var = (1-self.momentum) * self.running_var + \
-                self.momentum * unbias_var.data
+            ctx = x.context
+            self.running_mean.set_data((1-self.momentum.as_in_context(ctx)) \
+                * self.running_mean.data(ctx) \
+                + self.momentum.as_in_context(ctx) * mean)
+            self.running_var.set_data((1-self.momentum.as_in_context(ctx)) \
+                * self.running_var.data(ctx) + \
+                self.momentum.as_in_context(ctx) * unbias_var)
 
-            return F.SyncBatchNorm(x, gamma, beta, mean, std,
+            return nd.SyncBatchNorm(x, gamma, beta, mean, std,
                                    name='fwd', **self._kwargs)
         else:
-            return F.SyncBatchNorm(x, gamma, beta, self.running_mean, 
-                                   self.running_var, name='fwd', **self._kwargs)
+            print('testing evaluation mode')
+            return nd.SyncBatchNorm(x, gamma, beta, running_mean, 
+                                   running_var, name='fwd', **self._kwargs)
             
 
     def __repr__(self):
