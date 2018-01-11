@@ -629,7 +629,7 @@ class SyncBatchNorm(HybridBlock):
     def __init__(self, momentum=0.9, epsilon=1e-5, center=True, scale=True,
                  beta_initializer='zeros', gamma_initializer='ones',
                  running_mean_initializer='zeros', running_variance_initializer='ones',
-                 in_channels=0, **kwargs):
+                 in_channels=0, nGPUs=None, **kwargs):
         super(SyncBatchNorm, self).__init__(**kwargs)
         self._kwargs = {'eps': epsilon, 'momentum': momentum,
                         'fix_gamma': not scale}
@@ -656,21 +656,18 @@ class SyncBatchNorm(HybridBlock):
                                            init=running_variance_initializer,
                                            allow_deferred_init=True,
                                            differentiable=False)
-        nGPUs = self._get_nGPUs()
+        if nGPUs is None:
+            nGPUs = self._get_nGPUs()
         # considerring CPU case
-        nGPUs = nGPUs if nGPUs > 0 else 1
         self.xsum = SharedT(nGPUs, in_channels)
         self.xsquare = SharedT(nGPUs, in_channels)
 
     def _get_nGPUs(self):
-        """
-        for i in range(100):
-            try:
-                mx.nd.zeros((1,), ctx=mx.gpu(i))
-            except:
-                return i
-        """
-        return len(test_utils.list_gpus())
+        # caution: if not using all the GPUs, please mannually set nGPUs
+        nGPUs = len(test_utils.list_gpus())
+        # for CPU
+        nGPUs = nGPUs if nGPUs > 0 else 1
+        return nGPUs
 
     def cast(self, dtype):
         if np.dtype(dtype).name == 'float16':
@@ -678,7 +675,7 @@ class SyncBatchNorm(HybridBlock):
         super(BatchNorm, self).cast(dtype)
 
     def hybrid_forward(self, F, x, gamma, beta, running_mean, running_var):
-        if True:#autograd.is_training():
+        if autograd.is_training():
             # TODO implement an efficient operator for this
             isum = x.sum(3).sum(2).sum(0)
             isquare = x.square().sum(3).sum(2).sum(0)
@@ -697,17 +694,17 @@ class SyncBatchNorm(HybridBlock):
             std = (sumvar / N + self.eps).sqrt()
             # update running mean and var
             ctx = x.context
-            self.running_mean.set_data((1-self.momentum.as_in_context(ctx)) \
-                * self.running_mean.data(ctx) \
-                + self.momentum.as_in_context(ctx) * mean)
-            self.running_var.set_data((1-self.momentum.as_in_context(ctx)) \
-                * self.running_var.data(ctx) + \
-                self.momentum.as_in_context(ctx) * unbias_var)
+            with autograd.pause():
+                self.running_mean.set_data((1-self.momentum.as_in_context(ctx)) \
+                    * self.running_mean.data(ctx) \
+                    + self.momentum.as_in_context(ctx) * mean)
+                self.running_var.set_data((1-self.momentum.as_in_context(ctx)) \
+                    * self.running_var.data(ctx) + \
+                    self.momentum.as_in_context(ctx) * unbias_var)
 
             return nd.SyncBatchNorm(x, gamma, beta, mean, std,
                                    name='fwd', **self._kwargs)
         else:
-            print('testing evaluation mode')
             return nd.SyncBatchNorm(x, gamma, beta, running_mean, 
                                    running_var, name='fwd', **self._kwargs)
             
