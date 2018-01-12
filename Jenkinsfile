@@ -16,7 +16,7 @@ def init_git() {
   deleteDir()
   retry(5) {
     try {
-      // Make sure wait long enough for quote. Important: Don't increase the amount of 
+      // Make sure wait long enough for api.github.com request quota. Important: Don't increase the amount of 
       // retries as this will increase the amount of requests and worsen the throttling
       timeout(time: 15, unit: 'MINUTES') {
         checkout scm
@@ -35,7 +35,9 @@ def init_git_win() {
   deleteDir()
   retry(5) {
     try {
-      timeout(time: 2, unit: 'MINUTES') {
+      // Make sure wait long enough for api.github.com request quota. Important: Don't increase the amount of
+      // retries as this will increase the amount of requests and worsen the throttling
+      timeout(time: 15, unit: 'MINUTES') {
         checkout scm
         bat 'git submodule update --init'
         bat 'git clean -d -f'        
@@ -163,6 +165,42 @@ try {
             """
           make("cpu", flag)
           pack_lib('cpu')
+        }
+      }
+    },
+    'CPU: Clang 3.9': {
+      node('mxnetlinux-cpu') {
+        ws('workspace/build-cpu-clang') {
+          init_git()
+          def flag = """ \
+            USE_PROFILER=1                \
+            USE_CPP_PACKAGE=1             \
+            USE_BLAS=openblas             \
+            USE_OPENMP=0                  \
+            CXX=clang++-3.9               \
+            CC=clang-3.9                  \
+            -j\$(nproc)
+            """
+          make("cpu_clang", flag)
+          pack_lib('cpu_clang')
+        }
+      }
+    },
+    'CPU: Clang 5': {
+      node('mxnetlinux-cpu') {
+        ws('workspace/build-cpu-clang') {
+          init_git()
+          def flag = """ \
+            USE_PROFILER=1                \
+            USE_CPP_PACKAGE=1             \
+            USE_BLAS=openblas             \
+            USE_OPENMP=1                  \
+            CXX=clang++-5.0               \
+            CC=clang-5.0                  \
+            -j\$(nproc)
+            """
+          make("cpu_clang", flag)
+          pack_lib('cpu_clang')
         }
       }
     },
