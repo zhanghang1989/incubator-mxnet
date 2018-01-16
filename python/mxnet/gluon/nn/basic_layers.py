@@ -92,7 +92,7 @@ class HybridSequential(HybridBlock):
 
     Example::
 
-        net = nn.Sequential()
+        net = nn.HybridSequential()
         # use net's name_scope to give child Blocks appropriate names.
         with net.name_scope():
             net.add(nn.Dense(10, activation='relu'))
