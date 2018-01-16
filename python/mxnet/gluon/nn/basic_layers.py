@@ -19,8 +19,8 @@
 # pylint: disable= arguments-differ
 """Basic neural network layers."""
 __all__ = ['Sequential', 'HybridSequential', 'Dense', 'Activation',
-           'Dropout', 'BatchNorm', 'SyncBatchNorm', 'LeakyReLU', 'Embedding', 'Flatten',
-           'Lambda', 'HybridLambda']
+           'Dropout', 'BatchNorm', 'LeakyReLU', 'Embedding', 'Flatten',
+           'Lambda', 'HybridLambda', 'SyncBatchNorm']
 
 import threading
 import warnings
@@ -28,7 +28,7 @@ import numpy as np
 
 from ..block import Block, HybridBlock
 from ..utils import _indent
-from ... import nd, sym, kv, test_utils, autograd
+from ... import nd, sym, kv, test_utils, autograd, operator
 
 
 class Sequential(Block):
@@ -568,13 +568,69 @@ class HybridLambda(HybridBlock):
                                            function=self._func_name)
 
 
+class AllReduce(operator.CustomOp):
+    def __init__(self, need_top_grad=True):
+        self.kv = kv.create('device')
+        self.need_top_grad_ = need_top_grad
+        self.initialized = False
+
+    def forward(self, is_train, req, in_data, out_data, aux):
+        if not self.initialized:
+            print('allreduce initializing')
+            self.kv.init(0, in_data[0])
+            self.initialized = True
+        print('allreduce forwarding')
+        self.kv.push(0, in_data)
+        for y in out_data:
+            self.kv.pull(0, y)
+        print('allreduce forwarding done')
+
+    def backward(self, req, out_grad, in_data, out_data, in_grad, aux):
+        self.kv.push(0, out_grad)
+        for dx in in_grad:
+            self.kv.pull(0, dx)
+
+
+@operator.register("AllReduce")
+class AllReduceProp(operator.CustomOpProp):
+    def __init__(self):
+        super(AllReduceProp, self).__init__(need_top_grad=True)
+        self.nGPUs = len(test_utils.list_gpus())
+
+    def list_arguments(self):
+        args = []
+        for i in range(self.nGPUs):
+            ai = 'x%d'%(i)
+            args.append(ai)
+        return args
+    
+    def list_outputs(self):
+        outs = []
+        for i in range(self.nGPUs):
+            oi = 'y%d'%(i)
+            outs.append(oi)
+        return outs
+
+    def infer_shape(self, in_shape):
+        x_shape = in_shape[0]
+        y_shape = x_shape
+        x_shapes = []
+        y_shapes = []
+        for i in range(self.nGPUs):
+            x_shapes.append(x_shape)
+            y_shapes.append(y_shape)
+
+        return x_shapes, y_shapes
+
+    def create_operator(self, ctx, shapes, dtypes):
+        return AllReduce()
+
+
 class SharedT:
     def __init__(self, nGPUs, nchs):
         self.mutex = threading.Lock()
         self.all_tasks_done = threading.Condition(self.mutex)
         self.nGPUs = nGPUs
-        self.kv = kv.create('local')
-        self.kv.init('key', [nd.zeros(nchs)])
         self._clear()
 
     def _clear(self):
@@ -587,9 +643,12 @@ class SharedT:
             if self.push_tasks == 0:
                 self._clear()
             self.list.append(t)
+            idx = len(self.list) - 1
 
         with self.all_tasks_done:
             self.push_tasks -= 1
+        print('self.push_tasks', self.push_tasks)
+        return idx
 
     def join(self):
         with self.all_tasks_done:
@@ -600,20 +659,24 @@ class SharedT:
         self._reduce()
 
     def _reduce(self):
-        if self.reduce_tasks == self.nGPUs:
-            with self.all_tasks_done:
+        with self.all_tasks_done:
+            if self.reduce_tasks == self.nGPUs:
                 self.reduce_tasks -= 1
-                self.kv.push('key',self.list)
-        else:
-            with self.all_tasks_done:
+                print('before reducing')
+                self.list = nd.Custom(*self.list, op_type='AllReduce')
+                print('self.list', self.list)
+                print('after reducing')
+            else:
                 self.reduce_tasks -= 1
-                if self.reduce_tasks == 0:
-                    self.all_tasks_done.notify_all()
-                while self.reduce_tasks:
-                    self.all_tasks_done.wait()
 
-    def get(self, out):
-        self.kv.pull('key', out=out)
+        with self.all_tasks_done:
+            if self.reduce_tasks == 0:
+                self.all_tasks_done.notify_all()
+            while self.reduce_tasks:
+                self.all_tasks_done.wait()
+
+    def get(self, idx):
+        self.list[idx]
 
     def test(self):
         print('self.list', self.list)
@@ -680,12 +743,12 @@ class SyncBatchNorm(HybridBlock):
             isum = x.sum(3).sum(2).sum(0)
             isquare = x.square().sum(3).sum(2).sum(0)
             # reduce sum
-            self.xsum.push(isum)
-            self.xsquare.push(isquare)
+            idx1 = self.xsum.push(isum)
+            idx2 = self.xsquare.push(isquare)
             self.xsum.join()
             self.xsquare.join()
-            self.xsum.get(isum)
-            self.xsquare.get(isquare)
+            isum = self.xsum.get(idx1)
+            isquare = self.xsquare.get(idx2)
             N = len(self.xsum)*x.shape[0]*x.shape[2]*x.shape[3]
             # calc mean and var
             mean = isum / N
