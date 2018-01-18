@@ -575,20 +575,17 @@ class AllReduce(operator.CustomOp):
         self.initialized = False
 
     def forward(self, is_train, req, in_data, out_data, aux):
-        if not self.initialized:
-            print('allreduce initializing')
-            self.kv.init(0, in_data[0])
-            self.initialized = True
-        print('allreduce forwarding')
-        self.kv.push(0, in_data)
-        for y in out_data:
-            self.kv.pull(0, y)
-        print('allreduce forwarding done')
+        out = nd.AllReduce(*in_data)
+        for i in range(len(out_data)):
+            out_data[i] = out[i].as_in_context(in_data[i].context)
+
+    def backward(self, req, out_grad, in_data, out_data, in_grad, aux):
+        out = nd.AllReduce(*out_grad)
+        for i in range(len(in_grad)):
+            in_grad[i] = out[i].as_in_context(out_grad[i].context)
 
     def backward(self, req, out_grad, in_data, out_data, in_grad, aux):
         self.kv.push(0, out_grad)
-        for dx in in_grad:
-            self.kv.pull(0, dx)
 
 
 @operator.register("AllReduce")
@@ -647,7 +644,6 @@ class SharedT:
 
         with self.all_tasks_done:
             self.push_tasks -= 1
-        print('self.push_tasks', self.push_tasks)
         return idx
 
     def join(self):
@@ -662,21 +658,20 @@ class SharedT:
         with self.all_tasks_done:
             if self.reduce_tasks == self.nGPUs:
                 self.reduce_tasks -= 1
-                print('before reducing')
                 self.list = nd.Custom(*self.list, op_type='AllReduce')
-                print('self.list', self.list)
-                print('after reducing')
             else:
                 self.reduce_tasks -= 1
 
         with self.all_tasks_done:
             if self.reduce_tasks == 0:
+                print('self.list', self.list)
                 self.all_tasks_done.notify_all()
             while self.reduce_tasks:
                 self.all_tasks_done.wait()
 
     def get(self, idx):
-        self.list[idx]
+        print('getting value for index[%d]'%(idx))
+        return self.list[idx]
 
     def test(self):
         print('self.list', self.list)
@@ -748,6 +743,7 @@ class SyncBatchNorm(HybridBlock):
             self.xsum.join()
             self.xsquare.join()
             isum = self.xsum.get(idx1)
+            print('isum', isum)
             isquare = self.xsquare.get(idx2)
             N = len(self.xsum)*x.shape[0]*x.shape[2]*x.shape[3]
             # calc mean and var
