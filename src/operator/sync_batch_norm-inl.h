@@ -49,7 +49,6 @@ struct SyncBatchNormParam : public dmlc::Parameter<SyncBatchNormParam> {
   float eps;
   float momentum;
   bool fix_gamma;
-  bool output_mean_var;
   DMLC_DECLARE_PARAMETER(SyncBatchNormParam) {
     DMLC_DECLARE_FIELD(eps).set_default(1e-3f)
     .describe("Epsilon to prevent div 0");
@@ -57,8 +56,6 @@ struct SyncBatchNormParam : public dmlc::Parameter<SyncBatchNormParam> {
     .describe("Momentum for moving average");
     DMLC_DECLARE_FIELD(fix_gamma).set_default(true)
     .describe("Fix gamma while training");
-    DMLC_DECLARE_FIELD(output_mean_var).set_default(false)
-    .describe("Output All,normal mean and var");
   }
 };
 
@@ -82,10 +79,7 @@ class SyncBatchNormOp : public Operator {
     if (!ctx.is_train) {
       CHECK_EQ(req[syncbatchnorm::kOut], kWriteTo);
     }
-
     Stream<xpu> *s = ctx.get_stream<xpu>();
-    const real_t scale = static_cast<real_t>(in_data[syncbatchnorm::kData].shape_[1]) /
-                         static_cast<real_t>(in_data[syncbatchnorm::kData].shape_.Size());
     Tensor<xpu, 4> data;
     Tensor<xpu, 4> out;
     if (in_data[syncbatchnorm::kData].ndim() == 2) {
@@ -117,14 +111,12 @@ class SyncBatchNormOp : public Operator {
                         const std::vector<TBlob> &aux_states) {
     using namespace mshadow;
     using namespace mshadow::expr;
-    CHECK_EQ(out_grad.size(), param_.output_mean_var ? 3U : 1U);
-    CHECK_EQ(in_data.size(), 5U);
+    CHECK_EQ(out_grad.size(), 1U);
     CHECK_EQ(out_data.size(), 1U);
+    CHECK_EQ(in_data.size(), 5U);
     CHECK_EQ(in_grad.size(), 5U);
     Stream<xpu> *s = ctx.get_stream<xpu>();
     Tensor<xpu, 4> data, grad, grad_in;
-    const real_t scale = static_cast<real_t>(out_grad[syncbatchnorm::kOut].shape_[1]) /
-                         static_cast<real_t>(out_grad[syncbatchnorm::kOut].shape_.Size());
     if (in_data[syncbatchnorm::kData].ndim() == 2) {
       Shape<4> dshape = Shape4(out_grad[syncbatchnorm::kOut].shape_[0],
                                out_grad[syncbatchnorm::kOut].shape_[1], 1, 1);
@@ -195,7 +187,7 @@ class SyncBatchNormProp : public OperatorProperty {
                   std::vector<TShape> *out_shape,
                   std::vector<TShape> *aux_shape) const override {
     using namespace mshadow;
-    CHECK_EQ(in_shape->size(), 5U) << "Input:[data, gamma, beta]";
+    CHECK_EQ(in_shape->size(), 5U) << "Input:[data, gamma, beta, mean, std]";
     const TShape &dshape = in_shape->at(0);
     if (dshape.ndim() == 0) return false;
     in_shape->at(1) = TShape(Shape1(dshape[1]));
@@ -250,17 +242,11 @@ class SyncBatchNormProp : public OperatorProperty {
     return {out_grad[syncbatchnorm::kOut],
             in_data[syncbatchnorm::kData],
             in_data[syncbatchnorm::kGamma],
+            in_data[syncbatchnorm::kBeta],
             in_data[syncbatchnorm::kMean],
             in_data[syncbatchnorm::kStd],
            };
   }
-
-  /*
-  std::vector<ResourceRequest> BackwardResource(
-      const std::vector<TShape> &in_shape) const override {
-    return {ResourceRequest::kTempSpace};
-  }
-  */
 
   int NumVisibleOutputs() const override {
     return 1;
@@ -277,12 +263,6 @@ class SyncBatchNormProp : public OperatorProperty {
   std::vector<std::string> ListOutputs() const override {
     return {"output"};
   }
-
-  /*
-  std::vector<std::string> ListAuxiliaryStates() const override {
-    return {"moving_mean", "moving_var"};
-  }
-  */
 
   Operator* CreateOperator(Context ctx) const override {
       LOG(FATAL) << "Not Implemented.";

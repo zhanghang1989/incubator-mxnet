@@ -74,46 +74,12 @@ void AllReduceOpForwardEx(const nnvm::NodeAttrs& attrs,
   ElementwiseSum(reduce, &out, priority);
   // copy to each
   for (size_t i = 0; i < outputs.size(); ++i) {
-    //CopyFromTo(out, &(outputs[i]), priority);
     TBlob tmp = outputs[i].data();
     ndarray::Copy<xpu, xpu>(out.data(), &tmp,
                             out.ctx(), outputs[i].ctx(), ctx.run_ctx);
   }
 }
 
-/*
-template<typename xpu>
-void AllReduceOpBackwardEx(const nnvm::NodeAttrs& attrs,
-                                 const OpContext &ctx,
-                                 const std::vector<NDArray> &out_grad,
-                                 const std::vector<NDArray> &in_data,
-                                 const std::vector<NDArray> &out_data,
-                                 const std::vector<OpReqType> &req,
-                                 const std::vector<NDArray> &in_grad,
-                                 const std::vector<NDArray> &aux_states) {
-  using namespace mshadow;
-  using namespace mshadow::expr;
-  CHECK_EQ(out_grad.size(), in_grad.size());
-  int priority = 0;
-  // create buf
-  std::vector<NDArray> reduce(out_grad.size());
-  CopyFromTo(out_grad[0], &(in_grad[0]), priority);
-  NDArray out(in_grad[0].shape(), in_grad[0].ctx(), false, in_grad[0].dtype());
-  // copy to buf
-  reduce[0] = in_grad[0];
-  for (size_t i = 0; i < out_grad.size()-1; ++i) {
-    reduce[i+1] = NDArray(
-      in_grad[0].shape(), in_grad[0].ctx(), false, in_grad[0].dtype());
-    CopyFromTo(out_grad[i+1], &(reduce[i+1]), priority);
-  }
-  // all reduce
-  ElementwiseSum(reduce, &out, priority);
-  // copy to each
-  for (size_t i = 0; i < in_grad.size(); ++i) {
-      CopyFromTo(out, &(in_grad[i]), priority);
-  }
-}
-*/
 
 inline bool AllReduceShape(const nnvm::NodeAttrs& attrs,
                            std::vector<TShape> *in_attrs,

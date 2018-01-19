@@ -568,61 +568,6 @@ class HybridLambda(HybridBlock):
                                            function=self._func_name)
 
 
-class AllReduce(operator.CustomOp):
-    def __init__(self, need_top_grad=True):
-        self.kv = kv.create('device')
-        self.need_top_grad_ = need_top_grad
-        self.initialized = False
-
-    def forward(self, is_train, req, in_data, out_data, aux):
-        out = nd.AllReduce(*in_data)
-        for i in range(len(out_data)):
-            out_data[i] = out[i].as_in_context(in_data[i].context)
-
-    def backward(self, req, out_grad, in_data, out_data, in_grad, aux):
-        out = nd.AllReduce(*out_grad)
-        for i in range(len(in_grad)):
-            in_grad[i] = out[i].as_in_context(out_grad[i].context)
-
-    def backward(self, req, out_grad, in_data, out_data, in_grad, aux):
-        self.kv.push(0, out_grad)
-
-
-@operator.register("AllReduce")
-class AllReduceProp(operator.CustomOpProp):
-    def __init__(self):
-        super(AllReduceProp, self).__init__(need_top_grad=True)
-        self.nGPUs = len(test_utils.list_gpus())
-
-    def list_arguments(self):
-        args = []
-        for i in range(self.nGPUs):
-            ai = 'x%d'%(i)
-            args.append(ai)
-        return args
-    
-    def list_outputs(self):
-        outs = []
-        for i in range(self.nGPUs):
-            oi = 'y%d'%(i)
-            outs.append(oi)
-        return outs
-
-    def infer_shape(self, in_shape):
-        x_shape = in_shape[0]
-        y_shape = x_shape
-        x_shapes = []
-        y_shapes = []
-        for i in range(self.nGPUs):
-            x_shapes.append(x_shape)
-            y_shapes.append(y_shape)
-
-        return x_shapes, y_shapes
-
-    def create_operator(self, ctx, shapes, dtypes):
-        return AllReduce()
-
-
 class SharedT:
     def __init__(self, nGPUs, nchs):
         self.mutex = threading.Lock()
@@ -644,33 +589,31 @@ class SharedT:
 
         with self.all_tasks_done:
             self.push_tasks -= 1
-        return idx
-
-    def join(self):
-        with self.all_tasks_done:
             if self.push_tasks == 0:
                 self.all_tasks_done.notify_all()
             while self.push_tasks:
                 self.all_tasks_done.wait()
-        self._reduce()
+        return idx
 
     def _reduce(self):
         with self.all_tasks_done:
-            if self.reduce_tasks == self.nGPUs:
+            if self.reduce_tasks == 1:
+                assert(len(self.list) == self.nGPUs)
+                self.outlist = nd.AllReduce(*self.list)
+                for i in range(len(self.list)):
+                    self.list[i] = self.outlist[i]
                 self.reduce_tasks -= 1
-                self.list = nd.Custom(*self.list, op_type='AllReduce')
             else:
                 self.reduce_tasks -= 1
 
         with self.all_tasks_done:
             if self.reduce_tasks == 0:
-                print('self.list', self.list)
                 self.all_tasks_done.notify_all()
             while self.reduce_tasks:
                 self.all_tasks_done.wait()
 
     def get(self, idx):
-        print('getting value for index[%d]'%(idx))
+        self._reduce()
         return self.list[idx]
 
     def test(self):
@@ -694,7 +637,7 @@ class SyncBatchNorm(HybridBlock):
         if in_channels != 0:
             self.in_channels = in_channels
         self.eps = epsilon
-        self.momentum =  nd.array([momentum])
+        self.momentum =  momentum
 
         self.gamma = self.params.get('gamma', grad_req='write' if scale else 'null',
                                      shape=(in_channels,), init=gamma_initializer,
@@ -718,7 +661,7 @@ class SyncBatchNorm(HybridBlock):
             nGPUs = self._get_nGPUs()
         # considerring CPU case
         self.xsum = SharedT(nGPUs, in_channels)
-        self.xsquare = SharedT(nGPUs, in_channels)
+        self.xsqu = SharedT(nGPUs, in_channels)
 
     def _get_nGPUs(self):
         # caution: if not using all the GPUs, please mannually set nGPUs
@@ -736,30 +679,32 @@ class SyncBatchNorm(HybridBlock):
         if autograd.is_training():
             # TODO implement an efficient operator for this
             isum = x.sum(3).sum(2).sum(0)
-            isquare = x.square().sum(3).sum(2).sum(0)
+            isqu = x.square().sum(3).sum(2).sum(0)
             # reduce sum
-            idx1 = self.xsum.push(isum)
-            idx2 = self.xsquare.push(isquare)
-            self.xsum.join()
-            self.xsquare.join()
-            isum = self.xsum.get(idx1)
-            print('isum', isum)
-            isquare = self.xsquare.get(idx2)
-            N = len(self.xsum)*x.shape[0]*x.shape[2]*x.shape[3]
-            # calc mean and var
-            mean = isum / N
-            sumvar = isquare - isum * isum / N
-            unbias_var = sumvar / (N - 1)
-            std = (sumvar / N + self.eps).sqrt()
-            # update running mean and var
+            idsum = self.xsum.push(isum)
+            idsqu = self.xsqu.push(isqu)
+            osum = self.xsum.get(idsum)
+            osqu = self.xsqu.get(idsqu)
             ctx = x.context
+            N = len(self.xsum)*x.shape[0]*x.shape[2]*x.shape[3]
+            momentum = nd.array([self.momentum], ctx=ctx)
+            # calc mean and var
+            mean = osum / nd.array([N], ctx=ctx)
+            sumvar = osqu - osum * osum / N
+            unbias_var = sumvar / nd.array([(N - 1.0)], ctx=ctx)
+            std = (sumvar / nd.array([N], ctx=ctx) + \
+                nd.array([self.eps], ctx=ctx)).sqrt()
+            # update running mean and var
+            """
+            # FIXME uncomment after debug
             with autograd.pause():
-                self.running_mean.set_data((1-self.momentum.as_in_context(ctx)) \
+                self.running_mean.set_data((1.0 - momentum) \
                     * self.running_mean.data(ctx) \
-                    + self.momentum.as_in_context(ctx) * mean)
-                self.running_var.set_data((1-self.momentum.as_in_context(ctx)) \
+                    + momentum * mean)
+                self.running_var.set_data((1.0 - momentum) \
                     * self.running_var.data(ctx) + \
-                    self.momentum.as_in_context(ctx) * unbias_var)
+                    momentum * unbias_var)
+            """
 
             return nd.SyncBatchNorm(x, gamma, beta, mean, std,
                                    name='fwd', **self._kwargs)

@@ -31,10 +31,8 @@ namespace op {
 NNVM_REGISTER_OP(AllReduce)
 .set_attr<FComputeEx>("FComputeEx<gpu>", AllReduceOpForwardEx<gpu>);
 
-/*
 NNVM_REGISTER_OP(_backward_AllReduce)
-.set_attr<FCompute>("FComputeEx<gpu>", AllReduceOpBackwardEx<cpu>);
-*/
+.set_attr<FComputeEx>("FComputeEx<gpu>", AllReduceOpForwardEx<gpu>);
 
 }  // namespace op
 }  // namespace mxnet

@@ -47,15 +47,22 @@ NNVM_REGISTER_OP(AllReduce)
 .set_attr<FInferStorageType>("FInferStorageType", AllReduceStorageType)
 .set_attr<std::string>("key_var_num_args", "num_args")
 .set_attr<FComputeEx>("FComputeEx<cpu>", AllReduceOpForwardEx<cpu>)
+.set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseNone{"_backward_AllReduce"})
 .add_argument("data", "NDArray-or-Symbol[]", "List of arrays to allreduce");
 
-/*
-.set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseIn{"_backward_AllReduce"})
 NNVM_REGISTER_OP(_backward_AllReduce)
 .set_attr_parser(ParamParser<AllReduceOpParam>)
+.set_num_inputs([](const nnvm::NodeAttrs& attrs) {
+    uint32_t ret = dmlc::get<AllReduceOpParam>(attrs.parsed).num_args;
+    return ret;
+  })
+.set_num_outputs([](const nnvm::NodeAttrs& attrs) {
+    uint32_t ret = dmlc::get<AllReduceOpParam>(attrs.parsed).num_args;
+    return ret;
+  })
 .set_attr<nnvm::TIsBackward>("TIsBackward", true)
-.set_attr<FComputeEx>("FComputeEx<cpu>", AllReduceOpBackwardCPUEx<cpu>);
-*/
+.set_attr<FInferStorageType>("FInferStorageType", AllReduceStorageType)
+.set_attr<FComputeEx>("FComputeEx<cpu>", AllReduceOpForwardEx<cpu>);
 
 }  // namespace op
 }  // namespace mxnet

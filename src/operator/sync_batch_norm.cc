@@ -95,16 +95,7 @@ then set ``gamma`` to 1 and its gradient to 0.
 .add_argument("std", "NDArray-or-Symbol", "std array")
 .add_arguments(SyncBatchNormParam::__FIELDS__());
 
-NNVM_REGISTER_OP(SyncBatchNorm)
-.set_attr<nnvm::FSetInputVarAttrOnCompose>("FSetInputVarAttrOnCompose",
-    [](const nnvm::NodeAttrs& attrs, nnvm::NodePtr var, const int index) {
-      if (var->attrs.dict.find("__init__") != var->attrs.dict.end()) return;
-      if (index == 3) {
-        var->attrs.dict["__init__"] = "[\"zero\", {}]";
-      } else if (index == 4) {
-        var->attrs.dict["__init__"] = "[\"one\", {}]";
-      }
-    });
+NNVM_REGISTER_OP(SyncBatchNorm);
 
 }  // namespace op
 }  // namespace mxnet
