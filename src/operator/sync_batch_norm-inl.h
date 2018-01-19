@@ -132,36 +132,39 @@ class SyncBatchNormOp : public Operator {
     Tensor<xpu, 1> mean = in_data[syncbatchnorm::kMean].get<xpu, 1, real_t>(s);
     Tensor<xpu, 1> std = in_data[syncbatchnorm::kStd].get<xpu, 1, real_t>(s);
     Tensor<xpu, 1> gamma = in_data[syncbatchnorm::kGamma].get<xpu, 1, real_t>(s);
-    Tensor<xpu, 1> ggamma = in_grad[syncbatchnorm::kGamma].get<xpu, 1, real_t>(s);
-    Tensor<xpu, 1> gbeta = in_grad[syncbatchnorm::kBeta].get<xpu, 1, real_t>(s);
-    Tensor<xpu, 1> gmean = in_grad[syncbatchnorm::kMean].get<xpu, 1, real_t>(s);
-    Tensor<xpu, 1> gstd = in_grad[syncbatchnorm::kStd].get<xpu, 1, real_t>(s);
+    //Tensor<xpu, 1> beta = in_data[syncbatchnorm::kBeta].get<xpu, 1, real_t>(s);
+    // in_grad
+    Tensor<xpu, 1> gradGamma = in_grad[syncbatchnorm::kGamma].get<xpu, 1, real_t>(s);
+    Tensor<xpu, 1> gradBeta = in_grad[syncbatchnorm::kBeta].get<xpu, 1, real_t>(s);
+    Tensor<xpu, 1> gradMean = in_grad[syncbatchnorm::kMean].get<xpu, 1, real_t>(s);
+    Tensor<xpu, 1> gradStd = in_grad[syncbatchnorm::kStd].get<xpu, 1, real_t>(s);
     // update moving avg
 
     if (param_.fix_gamma) gamma = 1.f;
-
-    // cal
-    gstd = sumall_except_dim<1>((grad * broadcast<1>(gamma, data.shape_)) *
+    // gradStd, gradMean
+    Assign(gradStd, req[syncbatchnorm::kStd],
+           sumall_except_dim<1>((grad * broadcast<1>(gamma, data.shape_)) *
                                 (data - broadcast<1>(mean, data.shape_)) *
                                 -1.f *
                                 F<mshadow_op::power>(broadcast<1>(std, data.shape_),
-                                                     -2.f));
-    gmean = sumall_except_dim<1>(grad * broadcast<1>(gamma, data.shape_) /
-                                 broadcast<1>(std, data.shape_));
-    // assign
+                                                     -2.f)));
+    Assign(gradMean, req[syncbatchnorm::kMean],
+           sumall_except_dim<1>(grad * broadcast<1>(gamma, data.shape_) /
+                                broadcast<1>(std, data.shape_)));
+    // grad_in
     if (!param_.fix_gamma) {
-      Assign(ggamma, req[syncbatchnorm::kGamma],
+      Assign(gradGamma, req[syncbatchnorm::kGamma],
              sumall_except_dim<1>(
                  grad * (data - broadcast<1>(mean, data.shape_)) /
                  broadcast<1>(std, data.shape_)));
     } else {
-      Assign(ggamma, req[syncbatchnorm::kGamma], 0.0f);
+      Assign(gradGamma, req[syncbatchnorm::kGamma], 0.0f);
     }
     Assign(grad_in, req[syncbatchnorm::kData],
            (grad * broadcast<1>(gamma, data.shape_)) /
            broadcast<1>(std, data.shape_))
 
-    Assign(gbeta, req[syncbatchnorm::kBeta], sumall_except_dim<1>(grad));
+    Assign(gradBeta, req[syncbatchnorm::kBeta], sumall_except_dim<1>(grad));
   }
 
  private:
