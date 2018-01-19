@@ -129,8 +129,8 @@ class SyncBatchNormOp : public Operator {
       grad_in = in_grad[syncbatchnorm::kData].get<xpu, 4, real_t>(s);
     }
 
-    Tensor<xpu, 1> mean = out_data[syncbatchnorm::kMean].get<xpu, 1, real_t>(s);
-    Tensor<xpu, 1> std = out_data[syncbatchnorm::kStd].get<xpu, 1, real_t>(s);
+    Tensor<xpu, 1> mean = in_data[syncbatchnorm::kMean].get<xpu, 1, real_t>(s);
+    Tensor<xpu, 1> std = in_data[syncbatchnorm::kStd].get<xpu, 1, real_t>(s);
     Tensor<xpu, 1> gamma = in_data[syncbatchnorm::kGamma].get<xpu, 1, real_t>(s);
     Tensor<xpu, 1> ggamma = in_grad[syncbatchnorm::kGamma].get<xpu, 1, real_t>(s);
     Tensor<xpu, 1> gbeta = in_grad[syncbatchnorm::kBeta].get<xpu, 1, real_t>(s);
@@ -204,7 +204,7 @@ class SyncBatchNormProp : public OperatorProperty {
                  std::vector<int> *out_type,
                  std::vector<int> *aux_type) const override {
     using namespace mshadow;
-    CHECK_GE(in_type->size(), 1U);
+    CHECK_EQ(in_type->size(), 5U);
     int dtype = (*in_type)[0];
     CHECK_NE(dtype, -1) << "First input must have specified type";
     // For float16 input type beta, gamma, mean, and average are stored in float32.
@@ -246,14 +246,6 @@ class SyncBatchNormProp : public OperatorProperty {
             in_data[syncbatchnorm::kMean],
             in_data[syncbatchnorm::kStd],
            };
-  }
-
-  int NumVisibleOutputs() const override {
-    return 1;
-  }
-
-  int NumOutputs() const override {
-    return 1;
   }
 
   std::vector<std::string> ListArguments() const override {
