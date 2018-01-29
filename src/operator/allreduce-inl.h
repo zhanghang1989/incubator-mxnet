@@ -66,6 +66,7 @@ void AllReduceOpForwardEx(const nnvm::NodeAttrs& attrs,
   NDArray out(outputs[0].shape(), outputs[0].ctx(), false, outputs[0].dtype());
   // copy to buf
   for (size_t i = 0; i < inputs.size(); ++i) {
+    //inputs[i].WaitToRead();
     reduce[i] = NDArray(
       outputs[0].shape(), outputs[0].ctx(), false, outputs[0].dtype());
     CopyFromTo(inputs[i], &(reduce[i]), priority);
@@ -119,16 +120,12 @@ inline bool AllReduceStorageType(const nnvm::NodeAttrs& attrs,
                                  std::vector<int>* in_attrs,
                                  std::vector<int>* out_attrs) {
   CHECK_EQ(in_attrs->size(), out_attrs->size());
-  for (int i = 0; i < static_cast<int>(in_attrs->size()); ++i) {
-    int& out_stype = out_attrs->at(i);
-    bool dispatched = storage_type_assign(&out_stype, kDefaultStorage, dispatch_mode,
-                                          DispatchMode::kFComputeEx);
-    if (!dispatched) {
-      dispatch_fallback(out_attrs, dispatch_mode);
-    }
-    if (*dispatch_mode == DispatchMode::kFComputeFallback) {
-      LogStorageFallback(attrs, dev_mask, in_attrs, out_attrs);
-    }
+  *dispatch_mode = DispatchMode::kFComputeEx;
+  for (int& v : *in_attrs) {
+    if (v == - 1) v = kDefaultStorage;
+  }
+  for (size_t i = 0; i < out_attrs->size(); i++) {
+    (*out_attrs)[i] = kDefaultStorage;
   }
   return true;
 }

@@ -24,40 +24,32 @@
  * \author Hang Zhang
  * Adapted from BatchNormV1
 */
-#include "sync_batch_norm-inl.h"
-#include <nnvm/op_attr_types.h>
+#include "sum_square-inl.h"
+#include "elemwise_op_common.h"
 
 namespace mxnet {
 namespace op {
-template<>
-Operator *CreateOp<cpu>(SyncBatchNormParam param, int dtype) {
-  return new SyncBatchNormOp<cpu>(param);
-}
 
-// DO_BIND_DISPATCH comes from operator_common.h
-Operator *SyncBatchNormProp::CreateOperatorEx(Context ctx, std::vector<TShape> *in_shape,
-    std::vector<int> *in_type) const {
-    std::vector<TShape> out_shape, aux_shape;
-    std::vector<int> out_type, aux_type;
-    CHECK(InferType(in_type, &out_type, &aux_type));
-    CHECK(InferShape(in_shape, &out_shape, &aux_shape));
-    DO_BIND_DISPATCH(CreateOp, param_, (*in_type)[0]);
-}
 
-DMLC_REGISTER_PARAMETER(SyncBatchNormParam);
-
-MXNET_REGISTER_OP_PROPERTY(SyncBatchNorm, SyncBatchNormProp)
-.describe(R"code(Synchronized Cross-GPU Batch normalization.
-TODO FIXME
+NNVM_REGISTER_OP(SumSquare)
+.describe(R"code(In-device Sum and Sum of Square.
 )code" ADD_FILELINE)
+.set_num_inputs(1)
+.set_num_outputs(2)
+.set_attr<nnvm::FInferShape>("FInferShape", SumSquareInferShape)
+.set_attr<nnvm::FInferType>("FInferType", SumSquareInferType)
+.set_attr<FInferStorageType>("FInferStorageType", SumSquareStorageType)
+.set_attr<FCompute>("FCompute<cpu>", SumSquareForward<cpu>)
+.set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseInOut{"_backward_SumSquare"})
 .add_argument("data", "NDArray-or-Symbol", "Input data to batch normalization")
-.add_argument("gamma", "NDArray-or-Symbol", "gamma array")
-.add_argument("beta", "NDArray-or-Symbol", "beta array")
-.add_argument("mean", "NDArray-or-Symbol", "mean array")
-.add_argument("std", "NDArray-or-Symbol", "std array")
-.add_arguments(SyncBatchNormParam::__FIELDS__());
+;
 
-NNVM_REGISTER_OP(SyncBatchNorm);
+NNVM_REGISTER_OP(_backward_SumSquare)
+.set_num_outputs(1)
+.set_attr<nnvm::TIsBackward>("TIsBackward", true)
+.set_attr<FInferStorageType>("FInferStorageType", backward_SumSquareStorageType)
+.set_attr<FCompute>("FCompute<cpu>", SumSquareBackward<cpu>);
+;
 
 }  // namespace op
 }  // namespace mxnet

@@ -24,15 +24,16 @@
  * \author Hang Zhang
  * Adapted from BatchNormV1
  */
-#include "sync_batch_norm-inl.h"
+#include "sum_square-inl.h"
 
 namespace mxnet {
 namespace op {
-template<>
-Operator *CreateOp<gpu>(SyncBatchNormParam param, int dtype) {
-  return new SyncBatchNormOp<gpu>(param);
-}
+
+NNVM_REGISTER_OP(SumSquare)
+.set_attr<FCompute>("FCompute<gpu>", SumSquareForward<gpu>);
+
+NNVM_REGISTER_OP(_backward_SumSquare)
+.set_attr<FCompute>("FCompute<gpu>", SumSquareBackward<gpu>);
 
 }  // namespace op
 }  // namespace mxnet
-
