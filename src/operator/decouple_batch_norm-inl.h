@@ -29,7 +29,7 @@
 
 #include <dmlc/logging.h>
 #include <dmlc/parameter.h>
-#include <mxnet/operator.h>
+//#include <mxnet/operator.h>
 #include <map>
 #include <vector>
 #include <string>
@@ -42,7 +42,7 @@ namespace op {
 
 using namespace mshadow;
 template<typename xpu>
-void BNForward(Tensor<xpu, 4> data,
+inline void BNForward(Tensor<xpu, 4> data,
                Tensor<xpu, 1> gamma,
                Tensor<xpu, 1> beta,
                Tensor<xpu, 1> mean,
@@ -55,7 +55,7 @@ void BNForward(Tensor<xpu, 4> data,
 }
 
 template<typename xpu>
-void BNBackward(Tensor<xpu, 4> grad,
+inline void BNBackward(Tensor<xpu, 4> grad,
                 Tensor<xpu, 4> data,
                 Tensor<xpu, 1> mean,
                 Tensor<xpu, 1> std,
@@ -68,7 +68,7 @@ void BNBackward(Tensor<xpu, 4> grad,
                 const std::vector<OpReqType> &req) {
   using namespace mshadow::expr;
   Assign(gradMean, req[3], -1.f *
-         sumall_except_dim<1>(grad) * gamma / std);
+         sumall_except_dim<1>(grad* broadcast<1>(gamma / std, data.shape_)));
   Assign(gradStd, req[4],
          sumall_except_dim<1>((grad * broadcast<1>(gamma, data.shape_)) *
                               (data - broadcast<1>(mean, data.shape_)) *
@@ -85,7 +85,7 @@ void BNBackward(Tensor<xpu, 4> grad,
 }
 
 template<typename xpu>
-void DecoupleBNForward(const nnvm::NodeAttrs& attrs,
+inline void DecoupleBNForward(const nnvm::NodeAttrs& attrs,
                        const OpContext &ctx,
                        const std::vector<TBlob> &inputs,
                        const std::vector<OpReqType> &req,
@@ -119,7 +119,7 @@ void DecoupleBNForward(const nnvm::NodeAttrs& attrs,
 }
 
 template<typename xpu>
-void DecoupleBNBackward(const nnvm::NodeAttrs& attrs, 
+inline void DecoupleBNBackward(const nnvm::NodeAttrs& attrs, 
                         const OpContext &ctx,
                         const std::vector<TBlob> &inputs,
                         const std::vector<OpReqType> &req,
@@ -155,7 +155,6 @@ void DecoupleBNBackward(const nnvm::NodeAttrs& attrs,
   Tensor<xpu, 1> gradBeta = in_grad[2].get<xpu, 1, real_t>(s);
   Tensor<xpu, 1> gradMean = in_grad[3].get<xpu, 1, real_t>(s);
   Tensor<xpu, 1> gradStd = in_grad[4].get<xpu, 1, real_t>(s);
-
   BNBackward<xpu>(grad, data, mean, std, gamma, 
                   grad_in, gradGamma, gradBeta, gradMean, gradStd, req);
 }

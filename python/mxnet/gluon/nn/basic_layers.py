@@ -568,8 +568,9 @@ class HybridLambda(HybridBlock):
                                            function=self._func_name)
 
 
-class SharedT:
+class SharedT(Block):
     def __init__(self, nGPUs, nchs):
+        super(SharedT, self).__init__()
         self.mutex = threading.Lock()
         self.all_tasks_done = threading.Condition(self.mutex)
         self.nGPUs = nGPUs
@@ -586,9 +587,9 @@ class SharedT:
                 self._clear()
             self.list.append(t)
             idx = len(self.list) - 1
+            self.push_tasks -= 1
 
         with self.all_tasks_done:
-            self.push_tasks -= 1
             if self.push_tasks == 0:
                 self.all_tasks_done.notify_all()
             while self.push_tasks:
@@ -596,12 +597,15 @@ class SharedT:
         return idx
 
     def _reduce(self):
-        with self.all_tasks_done:
+        #with self.all_tasks_done:
+        with self.mutex:
             if self.reduce_tasks == 1:
                 assert(len(self.list) == self.nGPUs)
-                self.outlist = nd.AllReduce(*self.list)
-                for i in range(len(self.list)):
-                    self.list[i] = self.outlist[i]
+                self.list = nd.AllReduce(*self.list)
+                for xi in self.list:
+                    # manually attach grad, avoiding wrong ctx in backward
+                    xi.attach_grad()
+                    xi.wait_to_read()
                 self.reduce_tasks -= 1
             else:
                 self.reduce_tasks -= 1
@@ -626,7 +630,7 @@ class SharedT:
         return 'SharedT'
 
 
-class SyncBatchNorm(HybridBlock):
+class SyncBatchNorm(Block):
     def __init__(self, momentum=0.9, epsilon=1e-5, center=True, scale=True,
                  beta_initializer='zeros', gamma_initializer='ones',
                  running_mean_initializer='zeros', running_variance_initializer='ones',
@@ -675,43 +679,43 @@ class SyncBatchNorm(HybridBlock):
             dtype = 'float32'
         super(BatchNorm, self).cast(dtype)
 
-    def hybrid_forward(self, F, x, gamma, beta, running_mean, running_var):
+    def forward(self, x):
         if autograd.is_training():
-            # TODO implement an efficient operator for this
-            isum = x.sum(3).sum(2).sum(0)
-            isqu = x.square().sum(3).sum(2).sum(0)
+            #isum = x.sum(3).sum(2).sum(0)
+            #isqu = x.square().sum(3).sum(2).sum(0)
+            isum, isqu = nd.SumSquare(x)
             # reduce sum
             idsum = self.xsum.push(isum)
             idsqu = self.xsqu.push(isqu)
             osum = self.xsum.get(idsum)
             osqu = self.xsqu.get(idsqu)
+            assert(len(self.xsum) == len(self.xsqu))
             ctx = x.context
             N = len(self.xsum)*x.shape[0]*x.shape[2]*x.shape[3]
             momentum = nd.array([self.momentum], ctx=ctx)
             # calc mean and var
-            mean = osum / nd.array([N], ctx=ctx)
+            mean = osum / N
             sumvar = osqu - osum * osum / N
-            unbias_var = sumvar / nd.array([(N - 1.0)], ctx=ctx)
-            std = (sumvar / nd.array([N], ctx=ctx) + \
-                nd.array([self.eps], ctx=ctx)).sqrt()
+            unbias_var = sumvar / (N - 1)
+            std = nd.sqrt(sumvar / N + self.eps)
             # update running mean and var
-            """
-            # FIXME uncomment after debug
             with autograd.pause():
                 self.running_mean.set_data((1.0 - momentum) \
                     * self.running_mean.data(ctx) \
                     + momentum * mean)
                 self.running_var.set_data((1.0 - momentum) \
                     * self.running_var.data(ctx) + \
-                    momentum * unbias_var)
-            """
-
-            return nd.SyncBatchNorm(x, gamma, beta, mean, std,
-                                   name='fwd', **self._kwargs)
+                        momentum * unbias_var)
+            return nd.DecoupleBatchNorm(x, self.gamma.data(ctx), self.beta.data(ctx), 
+                                        mean, std,
+                                        name='fwd', **self._kwargs)
         else:
-            return nd.SyncBatchNorm(x, gamma, beta, running_mean, 
-                                   running_var, name='fwd', **self._kwargs)
-            
+            print('Sync BN Evaluation mode!')
+            ctx = x.context
+            return nd.DecoupleBatchNorm(x, self.gamma.data(ctx), self.beta.data(ctx), 
+                                        self.running_mean.data(ctx), 
+                                        self.running_var.data(ctx), name='fwd', 
+                                        **self._kwargs)
 
     def __repr__(self):
         s = '{name}({content}'
