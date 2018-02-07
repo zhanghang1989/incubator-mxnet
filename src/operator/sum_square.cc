@@ -16,20 +16,17 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 /*!
- * Copyright (c) 2015 by Contributors
- * \file sync_batch_norm.cc
- * \brief cpu sync BN operator
+ * Copyright (c) 2018 by Contributors
+ * \file sum_square.cc
+ * \brief 
  * \author Hang Zhang
- * Adapted from BatchNormV1
 */
 #include "sum_square-inl.h"
 #include "elemwise_op_common.h"
 
 namespace mxnet {
 namespace op {
-
 
 NNVM_REGISTER_OP(SumSquare)
 .describe(R"code(In-device Sum and Sum of Square.

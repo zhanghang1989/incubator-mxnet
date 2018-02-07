@@ -16,10 +16,9 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 /*!
  * Copyright (c) 2018 by Contributors
- * \file sync_batch_norm-inl.h
+ * \file sum_square-inl.h
  * \brief
  * \author Hang Zhang
  */
@@ -41,11 +40,11 @@ namespace mxnet {
 namespace op {
 
 template<typename xpu>
-void SumSquareForward(const nnvm::NodeAttrs& attrs,
-                      const OpContext &ctx,
-                      const std::vector<TBlob> &inputs,
-                      const std::vector<OpReqType> &req,
-                      const std::vector<TBlob> &outputs) {
+inline void SumSquareForward(const nnvm::NodeAttrs& attrs,
+                             const OpContext &ctx,
+                             const std::vector<TBlob> &inputs,
+                             const std::vector<OpReqType> &req,
+                             const std::vector<TBlob> &outputs) {
   using namespace mshadow;
   using namespace mshadow::expr;
   CHECK_EQ(inputs.size(), 1U);
@@ -67,11 +66,11 @@ void SumSquareForward(const nnvm::NodeAttrs& attrs,
 
 
 template<typename xpu>
-void SumSquareBackward(const nnvm::NodeAttrs& attrs,
-                       const OpContext &ctx,
-                       const std::vector<TBlob> &inputs,
-                       const std::vector<OpReqType> &req,
-                       const std::vector<TBlob> &outputs) {
+inline void SumSquareBackward(const nnvm::NodeAttrs& attrs,
+                              const OpContext &ctx,
+                              const std::vector<TBlob> &inputs,
+                              const std::vector<OpReqType> &req,
+                              const std::vector<TBlob> &outputs) {
   using namespace mshadow;
   using namespace mshadow::expr;
   CHECK_EQ(inputs.size(), 5U);
@@ -91,11 +90,8 @@ void SumSquareBackward(const nnvm::NodeAttrs& attrs,
     data = in_data[0].get_with_shape<xpu, 4, real_t>(dshape, s);
     grad_in = in_grad[0].get_with_shape<xpu, 4, real_t>(dshape, s);
   } else {
-    LOG(INFO) << "before assigning data" ;
     data = in_data[0].get<xpu, 4, real_t>(s);
-    LOG(INFO) << "before assigning grad_in" ;
     grad_in = in_grad[0].get<xpu, 4, real_t>(s);
-    LOG(INFO) << "after assigning grad_in" ;
   }
   gradx = out_grad[0].get<xpu, 1, real_t>(s);
   gradx2 = out_grad[1].get<xpu, 1, real_t>(s);

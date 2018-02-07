@@ -692,7 +692,6 @@ class SyncBatchNorm(Block):
             assert(len(self.xsum) == len(self.xsqu))
             ctx = x.context
             N = len(self.xsum)*x.shape[0]*x.shape[2]*x.shape[3]
-            momentum = nd.array([self.momentum], ctx=ctx)
             # calc mean and var
             mean = osum / N
             sumvar = osqu - osum * osum / N
@@ -700,12 +699,12 @@ class SyncBatchNorm(Block):
             std = nd.sqrt(sumvar / N + self.eps)
             # update running mean and var
             with autograd.pause():
-                self.running_mean.set_data((1.0 - momentum) \
+                self.running_mean.set_data((1.0 - self.momentum) \
                     * self.running_mean.data(ctx) \
-                    + momentum * mean)
-                self.running_var.set_data((1.0 - momentum) \
+                    + self.momentum * mean)
+                self.running_var.set_data((1.0 - self.momentum) \
                     * self.running_var.data(ctx) + \
-                        momentum * unbias_var)
+                        self.momentum * unbias_var)
             return nd.DecoupleBatchNorm(x, self.gamma.data(ctx), self.beta.data(ctx), 
                                         mean, std,
                                         name='fwd', **self._kwargs)

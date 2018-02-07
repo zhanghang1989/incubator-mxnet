@@ -43,12 +43,12 @@ namespace op {
 using namespace mshadow;
 template<typename xpu>
 inline void BNForward(Tensor<xpu, 4> data,
-               Tensor<xpu, 1> gamma,
-               Tensor<xpu, 1> beta,
-               Tensor<xpu, 1> mean,
-               Tensor<xpu, 1> std,
-               Tensor<xpu, 4> &out,
-               const std::vector<OpReqType> &req) {
+                      Tensor<xpu, 1> gamma,
+                      Tensor<xpu, 1> beta,
+                      Tensor<xpu, 1> mean,
+                      Tensor<xpu, 1> std,
+                      Tensor<xpu, 4> &out,
+                      const std::vector<OpReqType> &req) {
   using namespace mshadow::expr;
   Assign(out, req[0], broadcast<1>(gamma / std, data.shape_) * data +
            broadcast<1>(beta - (gamma * mean) / std, data.shape_));
@@ -56,17 +56,18 @@ inline void BNForward(Tensor<xpu, 4> data,
 
 template<typename xpu>
 inline void BNBackward(Tensor<xpu, 4> grad,
-                Tensor<xpu, 4> data,
-                Tensor<xpu, 1> mean,
-                Tensor<xpu, 1> std,
-                Tensor<xpu, 1> gamma,
-                Tensor<xpu, 4> &grad_in,
-                Tensor<xpu, 1> &gradGamma,
-                Tensor<xpu, 1> &gradBeta,
-                Tensor<xpu, 1> &gradMean,
-                Tensor<xpu, 1> &gradStd,
-                const std::vector<OpReqType> &req) {
+                       Tensor<xpu, 4> data,
+                       Tensor<xpu, 1> mean,
+                       Tensor<xpu, 1> std,
+                       Tensor<xpu, 1> gamma,
+                       Tensor<xpu, 4> &grad_in,
+                       Tensor<xpu, 1> &gradGamma,
+                       Tensor<xpu, 1> &gradBeta,
+                       Tensor<xpu, 1> &gradMean,
+                       Tensor<xpu, 1> &gradStd,
+                       const std::vector<OpReqType> &req) {
   using namespace mshadow::expr;
+  // the grad may not be zero originally? check this
   Assign(gradMean, req[3], -1.f *
          sumall_except_dim<1>(grad* broadcast<1>(gamma / std, data.shape_)));
   Assign(gradStd, req[4],

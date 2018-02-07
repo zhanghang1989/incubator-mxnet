@@ -51,11 +51,11 @@ struct AllReduceOpParam : public dmlc::Parameter<AllReduceOpParam> {
 }; // struct AllReduceOpParam
 
 template<typename xpu>
-void AllReduceOpForwardEx(const nnvm::NodeAttrs& attrs,    
-                          const OpContext &ctx,
-                          const std::vector<NDArray> &inputs,
-                          const std::vector<OpReqType> &req,
-                          const std::vector<NDArray> &outputs) {
+inline void AllReduceOpForwardEx(const nnvm::NodeAttrs& attrs,    
+                                 const OpContext &ctx,
+                                 const std::vector<NDArray> &inputs,
+                                 const std::vector<OpReqType> &req,
+                                 const std::vector<NDArray> &outputs) {
   using namespace mshadow;
   using namespace mshadow::expr;
   CHECK_EQ(inputs.size(), outputs.size());
