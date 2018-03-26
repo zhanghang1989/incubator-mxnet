@@ -15,6 +15,7 @@ mxnet_option(USE_NCCL             "Use NVidia NCCL with CUDA" OFF)
 mxnet_option(USE_OPENCV           "Build with OpenCV support" ON)
 mxnet_option(USE_OPENMP           "Build with Openmp support" ON)
 mxnet_option(USE_CUDNN            "Build with cudnn support"  ON) # one could set CUDNN_ROOT for search path
+mxnet_option(USE_SSE              "Build with x86 SSE instruction support" AUTO)
 mxnet_option(USE_LAPACK           "Build with lapack support" ON IF NOT MSVC)
 mxnet_option(USE_MKL_IF_AVAILABLE "Use MKL if found" ON)
 mxnet_option(USE_MKLML_MKL        "Use MKLDNN variant of MKL (if MKL found)" ON IF USE_MKL_IF_AVAILABLE AND UNIX AND (NOT APPLE))
@@ -32,6 +33,7 @@ mxnet_option(USE_GPROF            "Compile with gprof (profiling) flag" OFF)
 mxnet_option(USE_CXX14_IF_AVAILABLE "Build with C++14 if the compiler supports it" OFF)
 mxnet_option(USE_VTUNE            "Enable use of Intel Amplifier XE (VTune)" OFF) # one could set VTUNE_ROOT for search path
 mxnet_option(ENABLE_CUDA_RTC      "Build with CUDA runtime compilation support" ON)
+mxnet_option(BUILD_CPP_EXAMPLES   "Build cpp examples" ON)
 mxnet_option(INSTALL_EXAMPLES     "Install the example source files." OFF)
 mxnet_option(USE_SIGNAL_HANDLER   "Print stack traces on segfaults." OFF)
 
@@ -89,11 +91,17 @@ if(MSVC)
 else(MSVC)
   include(CheckCXXCompilerFlag)
   if(USE_CXX14_IF_AVAILABLE)
-    check_cxx_compiler_flag("-std=c++14"   SUPPORT_CXX14)
+    check_cxx_compiler_flag("-std=c++14" SUPPORT_CXX14)
   endif()
   check_cxx_compiler_flag("-std=c++11"   SUPPORT_CXX11)
   check_cxx_compiler_flag("-std=c++0x"   SUPPORT_CXX0X)
-  check_cxx_compiler_flag("-msse2"       SUPPORT_MSSE2)
+  # For cross compilation, we can't rely on the compiler which accepts the flag, but mshadow will
+  # add platform specific includes not available in other arches
+  if(USE_SSE STREQUAL "AUTO")
+    check_cxx_compiler_flag("-msse2"     SUPPORT_MSSE2)
+  else()
+    set(SUPPORT_MSSE2 FALSE)
+  endif()
   set(CMAKE_C_FLAGS "-Wall -Wno-unknown-pragmas -fPIC -Wno-sign-compare")
   if ("${CMAKE_CXX_COMPILER_ID}" MATCHES ".*Clang$")
     set(CMAKE_C_FLAGS "-Wno-braced-scalar-init")
@@ -124,7 +132,9 @@ else(MSVC)
   endif()
 endif(MSVC)
 
-set(mxnet_LINKER_LIBS "")
+if(NOT mxnet_LINKER_LIBS)
+  set(mxnet_LINKER_LIBS "")
+endif(NOT mxnet_LINKER_LIBS)
 
 if(USE_GPROF)
   message(STATUS "Using GPROF")
@@ -152,17 +162,21 @@ if(USE_MKL_IF_AVAILABLE)
     add_subdirectory(3rdparty/mkldnn)
     include_directories(3rdparty/mkldnn/include)
     list(APPEND mxnet_LINKER_LIBS mkldnn)
-    set(MKL_FOUND TRUE)
-  else()
-    find_package(MKL)
   endif()
+  find_package(MKL)
+
   if(MKL_FOUND)
     include_directories(${MKL_INCLUDE_DIR})
     include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src/operator/mkl)
-    add_definitions(-DMXNET_USE_MKLDNN=1)
+
+    if(USE_MKLDNN)
+      add_definitions(-DMXNET_USE_MKLDNN=1)
+    endif()
+
     add_definitions(-DUSE_MKL=1)
     add_definitions(-DCUB_MKL=1)
     list(APPEND mxnet_LINKER_LIBS ${MKL_LIBRARIES})
+
     if(NOT MSVC)
       list(APPEND mxnet_LINKER_LIBS dl)
     endif()
@@ -209,14 +223,14 @@ endif()
 
 if(USE_CUDA AND FIRST_CUDA)
   include(cmake/ChooseBlas.cmake)
-  include(mshadow/cmake/Utils.cmake)
+  include(3rdparty/mshadow/cmake/Utils.cmake)
   include(cmake/FirstClassLangCuda.cmake)
   include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 else()
-  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/mshadow/cmake)
-    include(mshadow/cmake/mshadow.cmake)
-    include(mshadow/cmake/Utils.cmake)
-    include(mshadow/cmake/Cuda.cmake)
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/mshadow/cmake)
+    include(3rdparty/mshadow/cmake/mshadow.cmake)
+    include(3rdparty/mshadow/cmake/Utils.cmake)
+    include(3rdparty/mshadow/cmake/Cuda.cmake)
   else()
     include(mshadowUtils)
     include(Cuda)
@@ -231,15 +245,16 @@ foreach(var ${C_CXX_INCLUDE_DIRECTORIES})
 endforeach()
 
 include_directories("include")
-include_directories("mshadow")
+include_directories("3rdparty/mshadow")
 include_directories("3rdparty/cub")
-include_directories("nnvm/include")
-include_directories("dmlc-core/include")
-include_directories("dlpack/include")
+include_directories("3rdparty/nnvm/include")
+include_directories("3rdparty/nnvm/tvm/include")
+include_directories("3rdparty/dmlc-core/include")
+include_directories("3rdparty/dlpack/include")
 
 # commented out until PR goes through
-#if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/dlpack)
-#  add_subdirectory(dlpack)
+#if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/dlpack)
+#  add_subdirectory(3rdparty/dlpack)
 #endif()
 
 # Prevent stripping out symbols (operator registrations, for example)
@@ -377,37 +392,37 @@ if(USE_CUDNN AND USE_CUDA)
   endif()
 endif()
 
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/dmlc-core/cmake)
-  add_subdirectory("dmlc-core")
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/dmlc-core/cmake)
+  add_subdirectory("3rdparty/dmlc-core")
 endif()
 
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/mshadow/cmake)
-  add_subdirectory("mshadow")
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/mshadow/cmake)
+  add_subdirectory("3rdparty/mshadow")
 endif()
 FILE(GLOB_RECURSE SOURCE "src/*.cc" "src/*.h" "include/*.h")
 FILE(GLOB_RECURSE CUDA "src/*.cu" "src/*.cuh")
 
 # add nnvm to source
 FILE(GLOB_RECURSE NNVMSOURCE
-  nnvm/src/c_api/*.cc
-  nnvm/src/core/*.cc
-  nnvm/src/pass/*.cc
-  nnvm/src/c_api/*.h
-  nnvm/src/core/*.h
-  nnvm/src/pass/*.h
-  nnvm/include/*.h)
+  3rdparty/nnvm/src/c_api/*.cc
+  3rdparty/nnvm/src/core/*.cc
+  3rdparty/nnvm/src/pass/*.cc
+  3rdparty/nnvm/src/c_api/*.h
+  3rdparty/nnvm/src/core/*.h
+  3rdparty/nnvm/src/pass/*.h
+  3rdparty/nnvm/include/*.h)
 list(APPEND SOURCE ${NNVMSOURCE})
 
 # add mshadow file
-FILE(GLOB_RECURSE MSHADOWSOURCE "mshadow/mshadow/*.h")
-FILE(GLOB_RECURSE MSHADOW_CUDASOURCE "mshadow/mshadow/*.cuh")
+FILE(GLOB_RECURSE MSHADOWSOURCE "3rdparty/mshadow/mshadow/*.h")
+FILE(GLOB_RECURSE MSHADOW_CUDASOURCE "3rdparty/mshadow/mshadow/*.cuh")
 list(APPEND SOURCE ${MSHADOWSOURCE})
 list(APPEND CUDA ${MSHADOW_CUDASOURCE})
 
 # add source group
-FILE(GLOB_RECURSE GROUP_SOURCE "src/*.cc" "nnvm/*.cc" "plugin/*.cc")
-FILE(GLOB_RECURSE GROUP_Include "src/*.h" "nnvm/*.h" "mshadow/mshadow/*.h" "plugin/*.h")
-FILE(GLOB_RECURSE GROUP_CUDA "src/*.cu" "src/*.cuh" "mshadow/mshadow/*.cuh" "plugin/*.cu"
+FILE(GLOB_RECURSE GROUP_SOURCE "src/*.cc" "3rdparty/nnvm/*.cc" "plugin/*.cc")
+FILE(GLOB_RECURSE GROUP_Include "src/*.h" "3rdparty/nnvm/*.h" "3rdparty/mshadow/mshadow/*.h" "plugin/*.h")
+FILE(GLOB_RECURSE GROUP_CUDA "src/*.cu" "src/*.cuh" "3rdparty/mshadow/mshadow/*.cuh" "plugin/*.cu"
   "plugin/*.cuh" "3rdparty/cub/cub/*.cuh")
 assign_source_group("Source" ${GROUP_SOURCE})
 assign_source_group("Include" ${GROUP_Include})
@@ -546,7 +561,7 @@ if(USE_PLUGIN_CAFFE)
   endif()
 endif()
 
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/nnvm/CMakeLists.txt")
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/nnvm/CMakeLists.txt")
   set(nnvm_LINKER_LIBS nnvm)
   list(APPEND mxnet_LINKER_LIBS ${nnvm_LINKER_LIBS})
 endif()
@@ -580,8 +595,8 @@ if(USE_CUDA)
   endif()
 endif()
 if(USE_DIST_KVSTORE)
-  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/ps-lite/CMakeLists.txt)
-    add_subdirectory("ps-lite")
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/ps-lite/CMakeLists.txt)
+    add_subdirectory("3rdparty/ps-lite")
     list(APPEND pslite_LINKER_LIBS pslite protobuf)
     target_link_libraries(mxnet PUBLIC debug ${pslite_LINKER_LIBS_DEBUG})
     target_link_libraries(mxnet PUBLIC optimized ${pslite_LINKER_LIBS_RELEASE})
@@ -683,8 +698,7 @@ if(USE_CPP_PACKAGE)
   add_subdirectory(cpp-package)
 endif()
 
-# Problems on Mac OS X: 1. librt not available 2. mxnet built as MODULE library, which can't be linked.
-if(NOT (${CMAKE_SYSTEM_NAME} STREQUAL "Darwin"))
+if(BUILD_CPP_EXAMPLES)
   add_subdirectory(example/image-classification/predict-cpp)
 endif()
 
@@ -695,5 +709,4 @@ if(MSVC)
 endif()
 set(LINT_DIRS "include src plugin cpp-package tests")
 set(EXCLUDE_PATH "src/operator/contrib/ctc_include")
-add_custom_target(mxnet_lint COMMAND ${CMAKE_COMMAND} -DMSVC=${MSVC} -DPYTHON_EXECUTABLE=${PYTHON_EXECUTABLE} -DLINT_DIRS=${LINT_DIRS} -DPROJECT_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR} -DPROJECT_NAME=mxnet -DEXCLUDE_PATH=${EXCLUDE_PATH} -P ${CMAKE_CURRENT_SOURCE_DIR}/dmlc-core/cmake/lint.cmake)
-
+add_custom_target(mxnet_lint COMMAND ${CMAKE_COMMAND} -DMSVC=${MSVC} -DPYTHON_EXECUTABLE=${PYTHON_EXECUTABLE} -DLINT_DIRS=${LINT_DIRS} -DPROJECT_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR} -DPROJECT_NAME=mxnet -DEXCLUDE_PATH=${EXCLUDE_PATH} -P ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/dmlc-core/cmake/lint.cmake)

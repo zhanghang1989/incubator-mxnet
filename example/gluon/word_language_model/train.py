@@ -18,11 +18,11 @@
 import argparse
 import time
 import math
+import os
 import mxnet as mx
 from mxnet import gluon, autograd
 from mxnet.gluon import contrib
 import model
-import data
 
 parser = argparse.ArgumentParser(description='MXNet Autograd RNN/LSTM Language Model on Wikitext-2.')
 parser.add_argument('--model', type=str, default='lstm',
@@ -71,28 +71,33 @@ if args.cuda:
 else:
     context = mx.cpu(0)
 
-train_dataset = contrib.data.text.WikiText2('./data', 'train', seq_len=args.bptt)
+dirname = './data'
+dirname = os.path.expanduser(dirname)
+if not os.path.exists(dirname):
+    os.makedirs(dirname)
+
+train_dataset = contrib.data.text.WikiText2(dirname, 'train', seq_len=args.bptt)
 vocab = train_dataset.vocabulary
-val_dataset, test_dataset = [contrib.data.text.WikiText2('./data', segment,
+val_dataset, test_dataset = [contrib.data.text.WikiText2(dirname, segment,
                                                          vocab=vocab,
                                                          seq_len=args.bptt)
                              for segment in ['validation', 'test']]
 
-nbatch_train = len(train_dataset) / args.batch_size
+nbatch_train = len(train_dataset) // args.batch_size
 train_data = gluon.data.DataLoader(train_dataset,
                                    batch_size=args.batch_size,
                                    sampler=contrib.data.IntervalSampler(len(train_dataset),
                                                                         nbatch_train),
                                    last_batch='discard')
 
-nbatch_val = len(val_dataset) / args.batch_size
+nbatch_val = len(val_dataset) // args.batch_size
 val_data = gluon.data.DataLoader(val_dataset,
                                  batch_size=args.batch_size,
                                  sampler=contrib.data.IntervalSampler(len(val_dataset),
                                                                       nbatch_val),
                                  last_batch='discard')
 
-nbatch_test = len(test_dataset) / args.batch_size
+nbatch_test = len(test_dataset) // args.batch_size
 test_data = gluon.data.DataLoader(test_dataset,
                                   batch_size=args.batch_size,
                                   sampler=contrib.data.IntervalSampler(len(test_dataset),

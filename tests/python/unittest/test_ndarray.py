@@ -21,7 +21,7 @@ import os
 import pickle as pkl
 import unittest
 from nose.tools import raises
-from common import setup_module, with_seed
+from common import setup_module, with_seed, assertRaises, TemporaryDirectory
 from mxnet.test_utils import almost_equal
 from mxnet.test_utils import assert_almost_equal
 from mxnet.test_utils import default_context
@@ -290,6 +290,52 @@ def test_ndarray_legacy_load():
     for i in range(len(data)):
         assert same(data[i].asnumpy(), legacy_data[i].asnumpy())
 
+
+@with_seed()
+def test_buffer_load():
+    nrepeat = 10
+    with TemporaryDirectory(prefix='test_buffer_load_') as tmpdir:
+        for repeat in range(nrepeat):
+            # test load_buffer as list
+            data = []
+            for i in range(10):
+                data.append(random_ndarray(np.random.randint(1, 5)))
+            fname = os.path.join(tmpdir, 'list_{0}.param'.format(repeat))
+            mx.nd.save(fname, data)
+            with open(fname, 'rb') as dfile:
+                buf_data = dfile.read()
+                data2 = mx.nd.load_frombuffer(buf_data)
+                assert len(data) == len(data2)
+                for x, y in zip(data, data2):
+                    assert np.sum(x.asnumpy() != y.asnumpy()) == 0
+                # test garbage values
+                assertRaises(mx.base.MXNetError,  mx.nd.load_frombuffer, buf_data[:-10])
+            # test load_buffer as dict
+            dmap = {'ndarray xx %s' % i : x for i, x in enumerate(data)}
+            fname = os.path.join(tmpdir, 'dict_{0}.param'.format(repeat))
+            mx.nd.save(fname, dmap)
+            with open(fname, 'rb') as dfile:
+                buf_dmap = dfile.read()
+                dmap2 = mx.nd.load_frombuffer(buf_dmap)
+                assert len(dmap2) == len(dmap)
+                for k, x in dmap.items():
+                    y = dmap2[k]
+                    assert np.sum(x.asnumpy() != y.asnumpy()) == 0
+                # test garbage values
+                assertRaises(mx.base.MXNetError,  mx.nd.load_frombuffer, buf_dmap[:-10])
+
+            # we expect the single ndarray to be converted into a list containing the ndarray
+            single_ndarray = data[0]
+            fname = os.path.join(tmpdir, 'single_{0}.param'.format(repeat))
+            mx.nd.save(fname, single_ndarray)
+            with open(fname, 'rb') as dfile:
+                buf_single_ndarray = dfile.read()
+                single_ndarray_loaded = mx.nd.load_frombuffer(buf_single_ndarray)
+                assert len(single_ndarray_loaded) == 1
+                single_ndarray_loaded = single_ndarray_loaded[0]
+                assert np.sum(single_ndarray.asnumpy() != single_ndarray_loaded.asnumpy()) == 0
+                # test garbage values
+                assertRaises(mx.base.MXNetError,  mx.nd.load_frombuffer, buf_single_ndarray[:-10])
 
 @with_seed()
 def test_ndarray_slice():
@@ -946,6 +992,8 @@ def test_ndarray_indexing():
         def assert_same(np_array, np_index, mx_array, mx_index, mx_value, np_value=None):
             if np_value is not None:
                 np_array[np_index] = np_value
+            elif isinstance(mx_value, mx.nd.NDArray):
+                np_array[np_index] = mx_value.asnumpy()
             else:
                 np_array[np_index] = mx_value
             mx_array[mx_index] = mx_value
@@ -978,6 +1026,9 @@ def test_ndarray_indexing():
             # test value is an numeric_type
             assert_same(np_array, np_index, mx_array, index, np.random.randint(low=-10000, high=0))
             if len(indexed_array_shape) > 1:
+                # test NDArray with broadcast
+                assert_same(np_array, np_index, mx_array, index,
+                            mx.nd.random.uniform(low=-10000, high=0, shape=(indexed_array_shape[-1],)))
                 # test numpy array with broadcast
                 assert_same(np_array, np_index, mx_array, index,
                             np.random.randint(low=-10000, high=0, size=(indexed_array_shape[-1],)))
@@ -1053,6 +1104,35 @@ def test_assign_float_value_to_ndarray():
     b[0] = a[0]
     assert same(a, b.asnumpy())
 
+@with_seed()
+def test_assign_a_row_to_ndarray():
+    """Test case from https://github.com/apache/incubator-mxnet/issues/9976"""
+    H, W = 10, 10
+    dtype = np.float32
+    a_np = np.random.random((H, W)).astype(dtype)
+    a_nd = mx.nd.array(a_np)
+
+    # assign directly
+    a_np[0] = a_np[1]
+    a_nd[0] = a_nd[1]
+    assert same(a_np, a_nd.asnumpy())
+
+    # assign a list
+    v = np.random.random(W).astype(dtype).tolist()
+    a_np[1] = v
+    a_nd[1] = v 
+    assert same(a_np, a_nd.asnumpy())
+
+    # assign a np.ndarray
+    v = np.random.random(W).astype(dtype)
+    a_np[2] = v
+    a_nd[2] = v 
+    assert same(a_np, a_nd.asnumpy())
+
+    # assign by slice 
+    a_np[0, :] = a_np[1]
+    a_nd[0, :] = a_nd[1]
+    assert same(a_np, a_nd.asnumpy())
 
 if __name__ == '__main__':
     import nose

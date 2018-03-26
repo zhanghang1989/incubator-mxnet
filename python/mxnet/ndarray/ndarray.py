@@ -174,7 +174,14 @@ fixed-size items.
     __slots__ = []
     # make numpy functions return NDArray instead of numpy object array
     __array_priority__ = 1000.0
+    # Extension type code for TVM function.
+    # See C++ side of definition(kTVMNDArrayTypeCode) at include/mxmet/tensor_blob.h
+    _tvm_tcode = 19
     # pylint: disable= no-member, undefined-variable
+
+    @property
+    def _tvm_handle(self):
+        return self.handle.value
 
     def __repr__(self):
         """Returns a string representation of the array."""
@@ -688,6 +695,8 @@ fixed-size items.
                 # may need to broadcast first
                 if isinstance(value, NDArray):
                     if value.handle is not self.handle:
+                        if value.shape != shape:
+                            value = value.broadcast_to(shape)
                         value.copyto(self)
                 elif isinstance(value, numeric_types):
                     _internal._full(shape=shape, ctx=self.context,
@@ -1674,7 +1683,7 @@ fixed-size items.
         pdata = ctypes.POINTER(mx_uint)()
         check_call(_LIB.MXNDArrayGetShape(
             self.handle, ctypes.byref(ndim), ctypes.byref(pdata)))
-        return tuple(pdata[:ndim.value])
+        return tuple(pdata[:ndim.value]) # pylint: disable=invalid-slice-index
 
 
     @property

@@ -1634,43 +1634,45 @@ def test_sparse_elementwise_sum():
 
 @with_seed()
 def test_sparse_embedding():
-    ''' test sparse embedding op on cpu '''
-    def check_sparse_embedding(executor, weight_ref, data_onehot, grad, density):
-        # update weight based on density
-        weight[:] = rand_ndarray(weight.shape, 'row_sparse', density=density)
-        # check forward
-        executor.forward(is_train=True)
-        assert_almost_equal(executor.outputs[0].asnumpy(), np.dot(data_onehot, weight.asnumpy()))
-        # check backward
-        executor.backward([grad])
-        assert_almost_equal(grad_map["embed_weight"].asnumpy(), np.dot(data_onehot.T, grad.asnumpy()))
+    ''' test sparse embedding operator '''
+    def check_sparse_embedding(in_dim, out_dim, batch, densities, deterministic):
+        # init executor
+        data = mx.sym.Variable("data")
+        weight = mx.sym.Variable("embed_weight", stype='row_sparse')
+        embed = mx.sym.contrib.SparseEmbedding(data=data, weight=weight, input_dim=in_dim,
+                                               output_dim=out_dim, deterministic=deterministic,
+                                               name="embed")
+        grad_req = {'data': 'null', 'embed_weight': 'write'}
+        exe_test = embed.simple_bind(default_context(), grad_req=grad_req, data=(batch,))
+        arg_map = dict(zip(embed.list_arguments(), exe_test.arg_arrays))
+        grad_map = dict(zip(embed.list_arguments(), exe_test.grad_arrays))
+        # init data
+        np_data = np.random.randint(low=0, high=in_dim, size=batch)
+        np_onehot = np.zeros((batch, in_dim)).astype(np.float32)
+        np_onehot[np.arange(batch), np_data] = 1.0
+        arg_map["data"][:] = np_data
+        # init grad
+        np_grad = np.random.uniform(-1, 1, exe_test.outputs[0].shape)
+        grad = mx.nd.zeros(np_grad.shape)
+        grad[:] = np_grad
+        # weight
+        weight = arg_map["embed_weight"]
+        for density in densities:
+            # update weight based on density
+            weight[:] = rand_ndarray(weight.shape, 'row_sparse', density=density)
+            # check forward
+            exe_test.forward(is_train=True)
+            assert_almost_equal(exe_test.outputs[0].asnumpy(), np.dot(np_onehot, weight.asnumpy()), atol=1e-4)
+            # check backward
+            exe_test.backward([grad])
+            assert_almost_equal(grad_map["embed_weight"].asnumpy(), np.dot(np_onehot.T, grad.asnumpy()), atol=1e-4)
 
     densities = [0, 0.5, 1]
     in_dim = 50
     out_dim = 3
     batch = 8
-    # init executor
-    data = mx.sym.Variable("data")
-    weight = mx.sym.Variable("embed_weight", stype='row_sparse')
-    embed = mx.sym.contrib.SparseEmbedding(data=data, weight=weight, input_dim=in_dim,
-                                           output_dim=out_dim, name="embed")
-    grad_req = {'data': 'null', 'embed_weight': 'write'}
-    exe_test = embed.simple_bind(default_context(), grad_req=grad_req, data=(batch,))
-    arg_map = dict(zip(embed.list_arguments(), exe_test.arg_arrays))
-    grad_map = dict(zip(embed.list_arguments(), exe_test.grad_arrays))
-    # init data
-    np_data = np.random.randint(low=0, high=in_dim, size=batch)
-    np_onehot = np.zeros((batch, in_dim))
-    np_onehot[np.arange(batch), np_data] = 1.0
-    arg_map["data"][:] = np_data
-    # init grad
-    np_grad = np.random.uniform(-1, 1, exe_test.outputs[0].shape)
-    grad = mx.nd.sparse.zeros('row_sparse', np_grad.shape)
-    grad[:] = np_grad
-    # weight
-    weight = arg_map["embed_weight"]
-    for density in densities:
-        check_sparse_embedding(exe_test, weight, np_onehot, grad, density)
+    check_sparse_embedding(in_dim, out_dim, batch, densities, True)
+    check_sparse_embedding(in_dim, out_dim, batch, densities, False)
 
 
 @with_seed()
@@ -1818,6 +1820,21 @@ def test_scatter_ops():
                           lambda l, r: l + r,
                           rhs_is_scalar=True, verbose=False, density=0.5)
 
+@with_seed()
+def test_mkldnn_sparse():
+    # This test is trying to create a race condition describedd in
+    # https://github.com/apache/incubator-mxnet/issues/10189
+    arr = mx.nd.random.uniform(shape=(10, 10, 32, 32))
+    weight1 = mx.nd.random.uniform(shape=(10, 10, 3, 3))
+    arr = mx.nd.Convolution(data=arr, weight=weight1, no_bias=True, kernel=(3, 3), num_filter=10)
+
+    rs_arr = mx.nd.sparse.row_sparse_array((mx.nd.zeros_like(arr), np.arange(arr.shape[0])))
+    weight2 = mx.nd.random.uniform(shape=(10, np.prod(arr.shape[1:4])))
+    fc_res = mx.nd.FullyConnected(data=arr, weight=weight2, no_bias=True, num_hidden=10)
+    sum_res = mx.nd.elemwise_sub(arr, rs_arr)
+    res1 = np.dot(mx.nd.flatten(sum_res).asnumpy(), weight2.asnumpy().T)
+    print(res1 - fc_res.asnumpy())
+    almost_equal(res1, fc_res.asnumpy())
 
 @with_seed()
 def test_sparse_nd_where():
