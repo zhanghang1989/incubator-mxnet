@@ -561,7 +561,12 @@ class HybridBlock(Block):
     def forward(self, x, *args):
         """Defines the forward computation. Arguments can be either
         :py:class:`NDArray` or :py:class:`Symbol`."""
-        if isinstance(x, NDArray):
+        if isinstance(X, list):
+            y = []
+            for xi in x:
+                y.append(self.forward(x, *args))
+            return y
+        elif isinstance(x, NDArray):
             with x.context as ctx:
                 try:
                     if self._active:

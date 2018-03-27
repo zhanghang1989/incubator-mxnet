@@ -680,74 +680,11 @@ class HybridLambda(HybridBlock):
         return '{name}({function})'.format(name=self.__class__.__name__,
                                            function=self._func_name)
 
-
-class SharedT(Block):
-    def __init__(self, nGPUs, nchs):
-        super(SharedT, self).__init__()
-        self.mutex = threading.Lock()
-        self.all_tasks_done = threading.Condition(self.mutex)
-        self.nGPUs = nGPUs
-        self._clear()
-
-    def _clear(self):
-        self.list = []
-        self.push_tasks = self.nGPUs
-        self.reduce_tasks = self.nGPUs
-
-    def push(self, t):
-        with self.mutex:
-            if self.push_tasks == 0:
-                self._clear()
-            self.list.append(t)
-            idx = len(self.list) - 1
-            self.push_tasks -= 1
-
-        with self.all_tasks_done:
-            if self.push_tasks == 0:
-                self.all_tasks_done.notify_all()
-            while self.push_tasks:
-                self.all_tasks_done.wait()
-        return idx
-
-    def _reduce(self):
-        #with self.all_tasks_done:
-        with self.mutex:
-            if self.reduce_tasks == 1:
-                assert(len(self.list) == self.nGPUs)
-                self.list = nd.AllReduce(*self.list)
-                for xi in self.list:
-                    # manually attach grad, avoiding wrong ctx in backward
-                    xi.attach_grad()
-                    xi.wait_to_read()
-                self.reduce_tasks -= 1
-            else:
-                self.reduce_tasks -= 1
-
-        with self.all_tasks_done:
-            if self.reduce_tasks == 0:
-                self.all_tasks_done.notify_all()
-            while self.reduce_tasks:
-                self.all_tasks_done.wait()
-
-    def get(self, idx):
-        self._reduce()
-        return self.list[idx]
-
-    def test(self):
-        print('self.list', self.list)
-
-    def __len__(self):
-        return len(self.list)
-
-    def __repr__(self):
-        return 'SharedT'
-
-
 class SyncBatchNorm(Block):
     def __init__(self, momentum=0.9, epsilon=1e-5, center=True, scale=True,
                  beta_initializer='zeros', gamma_initializer='ones',
                  running_mean_initializer='zeros', running_variance_initializer='ones',
-                 in_channels=0, nGPUs=None, **kwargs):
+                 in_channels=0, **kwargs):
         super(SyncBatchNorm, self).__init__(**kwargs)
         self._kwargs = {'eps': epsilon, 'momentum': momentum,
                         'fix_gamma': not scale}
@@ -774,43 +711,22 @@ class SyncBatchNorm(Block):
                                            init=running_variance_initializer,
                                            allow_deferred_init=True,
                                            differentiable=False)
-        if nGPUs is None:
-            nGPUs = self._get_nGPUs()
-        # considerring CPU case
-        self.xsum = SharedT(nGPUs, in_channels)
-        self.xsqu = SharedT(nGPUs, in_channels)
-
-    def _get_nGPUs(self):
-        # caution: if not using all the GPUs, please mannually set nGPUs
-        nGPUs = len(test_utils.list_gpus())
-        # for CPU
-        nGPUs = nGPUs if nGPUs > 0 else 1
-        return nGPUs
 
     def cast(self, dtype):
         if np.dtype(dtype).name == 'float16':
             dtype = 'float32'
         super(BatchNorm, self).cast(dtype)
 
-    def forward(self, x):
-        if autograd.is_training():
-            #isum = x.sum(3).sum(2).sum(0)
-            #isqu = x.square().sum(3).sum(2).sum(0)
-            isum, isqu = nd.SumSquare(x)
-            # reduce sum
-            idsum = self.xsum.push(isum)
-            idsqu = self.xsqu.push(isqu)
-            osum = self.xsum.get(idsum)
-            osqu = self.xsqu.get(idsqu)
-            assert(len(self.xsum) == len(self.xsqu))
-            ctx = x.context
-            N = len(self.xsum)*x.shape[0]*x.shape[2]*x.shape[3]
-            # calc mean and var
-            mean = osum / N
-            sumvar = osqu - osum * osum / N
+    def _forward_each(self, x, osum, osqu, ngpu, idx):
+        # train mode only
+        assert(autograd.is_training())
+        N = ngpu*x.shape[0]*x.shape[2]*x.shape[3]
+        ctx = x.context
+        mean = osum / N
+        sumvar = osqu - osum * osum / N
+        std = nd.sqrt(sumvar / N + self.eps)
+        if idx == 0:
             unbias_var = sumvar / (N - 1)
-            std = nd.sqrt(sumvar / N + self.eps)
-            # update running mean and var
             with autograd.pause():
                 self.running_mean.set_data((1.0 - self.momentum) \
                     * self.running_mean.data(ctx) \
@@ -818,16 +734,51 @@ class SyncBatchNorm(Block):
                 self.running_var.set_data((1.0 - self.momentum) \
                     * self.running_var.data(ctx) + \
                         self.momentum * unbias_var)
-            return nd.DecoupleBatchNorm(x, self.gamma.data(ctx), self.beta.data(ctx), 
-                                        mean, std,
-                                        name='fwd', **self._kwargs)
+        return nd.DecoupleBatchNorm(x, self.gamma.data(ctx), self.beta.data(ctx), 
+                                    mean, std,
+                                    name='fwd', **self._kwargs)
+
+    def forward(self, x):
+        ctx = x.context
+        if isinstance(x, NDArray):
+            """ Can be replaced using the following code
+            return nd.BatchNorm(x, self.gamma.data(ctx), self.beta.data(ctx),
+                               self.running_mean.data(ctx),
+                               self.running_var.data(ctx),
+                               name='fwd', **self._kwargs)
+            """
+            if autograd.is_training():
+                osum, osqu = nd.SumSquare(x)
+                return self._forward_each(self, x, osum, osqu, 1, 0)
+            else:
+                std = (self.running_var.data(ctx) + self.eps).sqrt()
+                return nd.DecoupleBatchNorm(x, self.gamma.data(ctx), self.beta.data(ctx), 
+                                            self.running_mean.data(ctx), std,
+                                            name='fwd', **self._kwargs)
+        elif isinstance(x, list):
+            if not autograd.is_training():
+                y = []
+                for xi in x:
+                    y.append(self.forward(xi))
+                return y
+            else:
+                # calculate sum(x) and sum(x^2)
+                nGPU = len(x)
+                xsum, xsqu = [], []
+                for xi in x:
+                    isum, isqu = nd.SumSquare(x)
+                    xsum.append(isum)
+                    xsqu.append(isqu)
+                # all reduce sum
+                xsum = nd.AllReduce(xsum)
+                xsqu = nd.AllReduce(xsqu)
+                y = []
+                for idx, xi in enumerate(x):
+                    y.append(self._forward_each(self, xi, xsum[i], xsqu[i], nGPU, idx))
+                return y
         else:
-            print('Sync BN Evaluation mode!')
-            ctx = x.context
-            return nd.DecoupleBatchNorm(x, self.gamma.data(ctx), self.beta.data(ctx), 
-                                        self.running_mean.data(ctx), 
-                                        self.running_var.data(ctx), name='fwd', 
-                                        **self._kwargs)
+            raise RuntimeError('Unsupported input type for SyncBatchNorm!')
+
 
     def __repr__(self):
         s = '{name}({content}'
