@@ -29,6 +29,7 @@ from .activations import Activation
 from ..block import Block, HybridBlock
 from ..utils import _indent
 from ... import nd, sym, kv, test_utils, autograd, operator
+from ...ndarray import NDArray
 
 class Sequential(Block):
     """Stacks Blocks sequentially.
@@ -680,7 +681,7 @@ class HybridLambda(HybridBlock):
         return '{name}({function})'.format(name=self.__class__.__name__,
                                            function=self._func_name)
 
-class SyncBatchNorm(Block):
+class SyncBatchNorm(HybridBlock):
     def __init__(self, momentum=0.9, epsilon=1e-5, center=True, scale=True,
                  beta_initializer='zeros', gamma_initializer='ones',
                  running_mean_initializer='zeros', running_variance_initializer='ones',
@@ -739,8 +740,8 @@ class SyncBatchNorm(Block):
                                     name='fwd', **self._kwargs)
 
     def forward(self, x):
-        ctx = x.context
         if isinstance(x, NDArray):
+            ctx = x.context
             """ Can be replaced using the following code
             return nd.BatchNorm(x, self.gamma.data(ctx), self.beta.data(ctx),
                                self.running_mean.data(ctx),
@@ -749,7 +750,7 @@ class SyncBatchNorm(Block):
             """
             if autograd.is_training():
                 osum, osqu = nd.SumSquare(x)
-                return self._forward_each(self, x, osum, osqu, 1, 0)
+                return self._forward_each(x, osum, osqu, 1, 0)
             else:
                 std = (self.running_var.data(ctx) + self.eps).sqrt()
                 return nd.DecoupleBatchNorm(x, self.gamma.data(ctx), self.beta.data(ctx), 
@@ -766,15 +767,15 @@ class SyncBatchNorm(Block):
                 nGPU = len(x)
                 xsum, xsqu = [], []
                 for xi in x:
-                    isum, isqu = nd.SumSquare(x)
+                    isum, isqu = nd.SumSquare(xi)
                     xsum.append(isum)
                     xsqu.append(isqu)
                 # all reduce sum
-                xsum = nd.AllReduce(xsum)
-                xsqu = nd.AllReduce(xsqu)
+                xsum = nd.AllReduce(*xsum)
+                xsqu = nd.AllReduce(*xsqu)
                 y = []
-                for idx, xi in enumerate(x):
-                    y.append(self._forward_each(self, xi, xsum[i], xsqu[i], nGPU, idx))
+                for i, xi in enumerate(x):
+                    y.append(self._forward_each(xi, xsum[i], xsqu[i], nGPU, i))
                 return y
         else:
             raise RuntimeError('Unsupported input type for SyncBatchNorm!')

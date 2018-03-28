@@ -60,7 +60,7 @@ inline void AllReduceOpForwardEx(const nnvm::NodeAttrs& attrs,
   using namespace mshadow::expr;
   CHECK_EQ(inputs.size(), outputs.size());
   CHECK_EQ(inputs.size(), req.size());
-  int priority = 0;
+  //int priority = 0;
   // create buf
   std::vector<NDArray> reduce(inputs.size());
   NDArray out(outputs[0].shape(), outputs[0].ctx(), false, outputs[0].dtype());
@@ -69,16 +69,25 @@ inline void AllReduceOpForwardEx(const nnvm::NodeAttrs& attrs,
     //inputs[i].WaitToRead();
     reduce[i] = NDArray(
       outputs[0].shape(), outputs[0].ctx(), false, outputs[0].dtype());
-    CopyFromTo(inputs[i], &(reduce[i]), priority);
+    //CopyFromTo(inputs[i], &(reduce[i]), priority);
+    TBlob tmp = reduce[i].data();
+    ndarray::Copy<xpu, xpu>(inputs[i].data(), &tmp,
+                            inputs[i].ctx(), reduce[i].ctx(), ctx.run_ctx);
   }
   // all reduce
-  ElementwiseSum(reduce, &out, priority);
+  std::vector<TBlob> source_tblob(reduce.size());
+  for (size_t i = 0; i < reduce.size(); ++i) {
+    source_tblob[i] = reduce[i].data();
+  }
+  TBlob tmp = out.data();
+  ndarray::ElementwiseSum<xpu>(source_tblob, &tmp, ctx.run_ctx);
   // copy to each
   for (size_t i = 0; i < outputs.size(); ++i) {
     TBlob tmp = outputs[i].data();
     ndarray::Copy<xpu, xpu>(out.data(), &tmp,
                             out.ctx(), outputs[i].ctx(), ctx.run_ctx);
   }
+  LOG(INFO) << "all reduce";
 }
 
 

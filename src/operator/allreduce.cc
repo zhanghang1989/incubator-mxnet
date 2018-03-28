@@ -48,6 +48,14 @@ NNVM_REGISTER_OP(AllReduce)
 .set_attr<std::string>("key_var_num_args", "num_args")
 .set_attr<FComputeEx>("FComputeEx<cpu>", AllReduceOpForwardEx<cpu>)
 .set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseNone{"_backward_AllReduce"})
+.set_attr<nnvm::FInplaceOption>("FInplaceOption", [](const NodeAttrs& attrs){
+  uint32_t n = dmlc::get<AllReduceOpParam>(attrs.parsed).num_args;
+  std::vector<std::pair<int, int> > ret;
+  for (uint32_t i = 0; i < n; i++) {
+    ret.push_back(std::pair<int, int>(i, i));
+  }
+  return ret;
+})
 .add_argument("data", "NDArray-or-Symbol[]", "List of arrays to allreduce");
 
 NNVM_REGISTER_OP(_backward_AllReduce)
@@ -62,6 +70,14 @@ NNVM_REGISTER_OP(_backward_AllReduce)
   })
 .set_attr<nnvm::TIsBackward>("TIsBackward", true)
 .set_attr<FInferStorageType>("FInferStorageType", AllReduceStorageType)
+.set_attr<nnvm::FInplaceOption>("FInplaceOption", [](const NodeAttrs& attrs){
+  uint32_t n = dmlc::get<AllReduceOpParam>(attrs.parsed).num_args;
+  std::vector<std::pair<int, int> > ret;
+  for (uint32_t i = 0; i < n; i++) {
+    ret.push_back(std::pair<int, int>(i, i));
+  }
+  return ret;
+})
 .set_attr<FComputeEx>("FComputeEx<cpu>", AllReduceOpForwardEx<cpu>);
 
 }  // namespace op
