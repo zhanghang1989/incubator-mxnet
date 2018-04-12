@@ -100,11 +100,6 @@ else
 	NVCCFLAGS += -std=c++11 -Xcompiler -D_FORCE_INLINES -O3 -ccbin $(CXX) $(MSHADOW_NVCCFLAGS)
 endif
 
-# CFLAGS for profiler
-ifeq ($(USE_PROFILER), 1)
-	CFLAGS += -DMXNET_USE_PROFILER=1
-endif
-
 # CFLAGS for segfault logger
 ifeq ($(USE_SIGNAL_HANDLER), 1)
 	CFLAGS += -DMXNET_USE_SIGNAL_HANDLER=1
@@ -259,8 +254,10 @@ ifneq ($(ADD_LDFLAGS), NONE)
 	LDFLAGS += $(ADD_LDFLAGS)
 endif
 
-ifneq ($(USE_CUDA_PATH), NONE)
-	NVCC=$(USE_CUDA_PATH)/bin/nvcc
+ifeq ($(NVCC), NONE)
+	ifneq ($(USE_CUDA_PATH), NONE)
+		NVCC=$(USE_CUDA_PATH)/bin/nvcc
+	endif
 endif
 
 # Sets 'CUDA_ARCH', which determines the GPU architectures supported
