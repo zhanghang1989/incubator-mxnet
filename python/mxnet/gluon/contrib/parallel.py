@@ -19,96 +19,12 @@
 """Synchronized DataParallel"""
 import threading
 from ... import autograd
-from ...ndarray import NDArray
+from ...ndarray import AllReduce, NDArray
 from ..utils import split_and_load
+from ..nn import BatchNorm
+from ... import test_utils
 
-__all__ = ['DataParallelModel', 'DataParallelLoss', 'Barrier']
-
-
-class Barrier(object):
-    """Barrier for cross-device operation.
-
-    A cross device operation that allows synchronized push and pull. It can be used in
-    Cross-gpu Sycnhronized Batch Normalization.
-
-    Parameters
-    ----------
-    counter : int
-        Number of deivces.
-    operation : callable
-        The cross device operation is applying (e.g. AllReduce).
-    """
-    def __init__(self, counter, operation):
-        self._mutex = threading.Lock()
-        self.all_tasks_done = threading.Condition(self._mutex)
-        self.counter = counter
-        self.op = operation
-        self._clear()
-
-    def push(self, x):
-        """Push a NDArray from one of the device.
-        Input:
-            x (NDArray)
-
-        Output:
-            idx (int), the output index
-        """
-        with self._mutex:
-            if self.push_tasks == 0:
-                self._clear()
-            self.list.append(x)
-            idx = len(self.list) - 1
-            self.push_tasks -= 1
-
-        with self.all_tasks_done:
-            if self.push_tasks == 0:
-                self.all_tasks_done.notify_all()
-            while self.push_tasks:
-                self.all_tasks_done.wait()
-
-        self._sync_op()
-        return idx
-
-    def pull(self, idx):
-        """Pull the output to each device
-        Input:
-            idx (int)
-
-        Output:
-            out (NDArray)
-        """
-        return self.out[idx]
-
-    def _sync_op(self):
-        with self._mutex:
-            if self.reduce_tasks == 1:
-                assert(len(self.list) == self.counter)
-                self.out = self.op(*self.list)
-                if isinstance(self.out, (list, tuple)):
-                    for xi in self.out:
-                        xi.wait_to_read()
-                else:
-                    self.out.wait_to_read()
-                self.reduce_tasks -= 1
-            else:
-                self.reduce_tasks -= 1
-
-        with self.all_tasks_done:
-            if self.reduce_tasks == 0:
-                self.all_tasks_done.notify_all()
-            while self.reduce_tasks:
-                self.all_tasks_done.wait()
-
-    def _clear(self):
-        self.list = []
-        self.push_tasks = self.counter
-        self.reduce_tasks = self.counter
-
-    def __len__(self):
-        return len(self.list)
-
-    def __repr__(self):
-        return 'Barrier'
+__all__ = ['DataParallelModel', 'DataParallelLoss', 'SyncBatchNorm', 'Barrier']
 
 
 class DataParallelModel(object):
@@ -231,6 +147,204 @@ class DataParallelLoss(object):
             return tuple_map(self.module(*(inputs[0] + targets[0]), **kwargs[0]))
         assert(len(inputs) == len(self.ctx_list))
         return loss_parallel_apply(self.module, inputs, targets, kwargs, self.sync)
+
+
+class Barrier(object):
+    """Barrier for cross-device operation.
+
+    A cross device operation that allows synchronized push and pull. It can be used in
+    Cross-gpu Sycnhronized Batch Normalization.
+
+    Parameters
+    ----------
+    counter : int
+        Number of deivces.
+    operation : callable
+        The cross device operation is applying (e.g. AllReduce).
+    """
+    def __init__(self, counter, operation):
+        self._mutex = threading.Lock()
+        self.all_tasks_done = threading.Condition(self._mutex)
+        self.counter = counter
+        self.op = operation
+        self._clear()
+
+    def __call__(self, x):
+        """Push a NDArray from one of the device.
+        Input:
+            x (NDArray)
+
+        Output:
+            idx (int), the output index
+        """
+        with self._mutex:
+            if self.push_tasks == 0:
+                self._clear()
+            self.list.append(x)
+            idx = len(self.list) - 1
+            self.push_tasks -= 1
+
+        with self.all_tasks_done:
+            if self.push_tasks == 0:
+                self.all_tasks_done.notify_all()
+            while self.push_tasks:
+                self.all_tasks_done.wait()
+
+        self._sync_op()
+        return self.out[idx]
+
+    def _sync_op(self):
+        with self._mutex:
+            if self.reduce_tasks == 1:
+                assert(len(self.list) == self.counter)
+                self.out = self.op(*self.list)
+                if isinstance(self.out, (list, tuple)):
+                    for xi in self.out:
+                        xi.wait_to_read()
+                else:
+                    self.out.wait_to_read()
+                self.reduce_tasks -= 1
+            else:
+                self.reduce_tasks -= 1
+
+        with self.all_tasks_done:
+            if self.reduce_tasks == 0:
+                self.all_tasks_done.notify_all()
+            while self.reduce_tasks:
+                self.all_tasks_done.wait()
+
+    def _clear(self):
+        self.list = []
+        self.push_tasks = self.counter
+        self.reduce_tasks = self.counter
+
+    def __len__(self):
+        return len(self.list)
+
+    def __repr__(self):
+        return 'Barrier'
+
+
+class SyncBatchNorm(BatchNorm):
+    """Cross-GPU Synchronized Batch normalization (SyncBN)
+    Standard BN [1]_ implementation only normalize the data within each device.
+    SyncBN normalizes the input within the whole mini-batch.
+    We follow the sync-onece implmentation described in the paper [2]_ .
+
+    Parameters
+    ----------
+    axis : int, default 1
+        The axis that should be normalized. This is typically the channels
+        (C) axis. For instance, after a `Conv2D` layer with `layout='NCHW'`,
+        set `axis=1` in `BatchNorm`. If `layout='NHWC'`, then set `axis=3`.
+    momentum: float, default 0.9
+        Momentum for the moving average.
+    epsilon: float, default 1e-5
+        Small float added to variance to avoid dividing by zero.
+    center: bool, default True
+        If True, add offset of `beta` to normalized tensor.
+        If False, `beta` is ignored.
+    scale: bool, default True
+        If True, multiply by `gamma`. If False, `gamma` is not used.
+        When the next layer is linear (also e.g. `nn.relu`),
+        this can be disabled since the scaling
+        will be done by the next layer.
+    use_global_stats: bool, default False
+        If True, use global moving statistics instead of local batch-norm. This will force
+        change batch-norm into a scale shift operator.
+        If False, use local batch-norm.
+    beta_initializer: str or `Initializer`, default 'zeros'
+        Initializer for the beta weight.
+    gamma_initializer: str or `Initializer`, default 'ones'
+        Initializer for the gamma weight.
+    moving_mean_initializer: str or `Initializer`, default 'zeros'
+        Initializer for the moving mean.
+    moving_variance_initializer: str or `Initializer`, default 'ones'
+        Initializer for the moving variance.
+    in_channels : int, default 0
+        Number of channels (feature maps) in input data. If not specified,
+        initialization will be deferred to the first time `forward` is called
+        and `in_channels` will be inferred from the shape of input data.
+    nGPUs : int, default number of visible GPUs
+    Inputs:
+        - **data**: input tensor with arbitrary shape.
+    Outputs:
+        - **out**: output tensor with the same shape as `data`.
+
+
+    Reference:
+
+        .. [1] Ioffe, Sergey, and Christian Szegedy. "Batch normalization: Accelerating
+        deep network training by reducing internal covariate shift." *ICML 2015*
+
+        .. [2] Hang Zhang, Kristin Dana, Jianping Shi, Zhongyue Zhang, Xiaogang Wang,
+        Ambrish Tyagi, and Amit Agrawal. "Context Encoding for Semantic Segmentation." *CVPR 2018*
+    """
+    # pylint: disable=arguments-differ
+    def __init__(self, axis=1, momentum=0.9, epsilon=1e-5, nGPUs=None, **kwargs):
+        super(SyncBatchNorm, self).__init__(axis, momentum, epsilon, **kwargs)
+
+        self.eps = epsilon
+        self.momentum = momentum
+
+        if nGPUs is None:
+            nGPUs = self._get_nGPUs()
+        self.xsum = Barrier(nGPUs, AllReduce)
+        self.xsqu = Barrier(nGPUs, AllReduce)
+        self.updater = _SharedUpdater(nGPUs)
+
+    def _get_nGPUs(self):
+        # caution: if not using all the GPUs, please mannually set nGPUs
+        nGPUs = len(test_utils.list_gpus())
+        # for CPU
+        nGPUs = nGPUs if nGPUs > 0 else 1
+        return nGPUs
+
+    def hybrid_forward(self, F, x, gamma, beta, running_mean, running_var):
+        """Hybrid forward"""
+        if not autograd.is_training():
+            return F.BatchNorm(x, gamma, beta, running_mean, running_var, name='fwd',
+                               **self._kwargs)
+        isum, isqu = F.SumSquare(x)
+        # reduce sum for E(x) and E(x^2)
+        osum = self.xsum(isum)
+        osqu = self.xsqu(isqu)
+        assert len(self.xsum) == len(self.xsqu)
+        N = len(self.xsum)*x.shape[0]*x.shape[2]*x.shape[3]
+        # calc mean and std
+        mean = osum / N
+        sumvar = osqu - osum * osum / N
+        bias_var = sumvar / N
+        std = F.sqrt(F.clip(bias_var, a_min=self.eps, a_max=bias_var.max().asscalar()))
+        # update running mean and var
+        with autograd.pause():
+            unbias_var = sumvar / (N - 1)
+            ctx = x.context
+            self.updater(self.running_mean, self.running_var, mean, unbias_var,
+                         self.momentum, ctx)
+        return F.DecoupleBatchNorm(x, gamma, beta, mean, std)
+
+
+class _SharedUpdater(object):
+    # update only once
+    def __init__(self, nGPUs):
+        self.mutex = threading.Lock()
+        self.nGPUs = nGPUs
+        self._clear()
+
+    def _clear(self):
+        self.tasks = self.nGPUs
+
+    def __call__(self, running_mean, running_var, mean, unbias_var, momentum, ctx):
+        with self.mutex:
+            if self.tasks == self.nGPUs:
+                running_mean.set_data(momentum * running_mean.data(ctx) + \
+                    (1.0 - momentum) * mean)
+                running_var.set_data(momentum * running_var.data(ctx) + \
+                    (1.0 - momentum) * unbias_var)
+            self.tasks -= 1
+        if self.tasks == 0:
+            self._clear()
 
 
 def _split_load_kwargs(inputs, kwargs, ctx_list, batch_axis=0):

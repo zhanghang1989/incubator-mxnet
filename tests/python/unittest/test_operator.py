@@ -6217,6 +6217,18 @@ def test_op_roi_align():
     test_roi_align_autograd()
 
 
+@with_seed()
+def test_all_reduce():
+    ndevice = 4
+    ctx = [mx.gpu(i) for i in range(ndevice)]
+    X = [mx.nd.random.uniform(shape=(8, 3, 40, 40), ctx=ctx[i]) for i in range(ndevice)]
+    for x in X:
+        x.attach_grad()
+    Y = mx.nd.AllReduce(*X)
+    assert len(X) == len(Y)
+    for i in range(1, ndevice):
+        assert np.allclose(Y[i].asnumpy(), Y[0].asnumpy(), rtol=1e-3, atol=1e-4)
+
 if __name__ == '__main__':
     import nose
     nose.runmodule()
