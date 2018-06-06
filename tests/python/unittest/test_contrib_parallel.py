@@ -15,12 +15,13 @@
 # specific language governing permissions and limitations
 # under the License.
 
+import numpy as np
+from numpy.testing import assert_allclose, assert_array_equal
 import mxnet as mx
 from mxnet import nd, autograd, gluon
 from mxnet.gluon import nn, Block
 from mxnet.gluon.contrib.parallel import *
 from mxnet import test_utils
-from numpy.testing import assert_allclose, assert_array_equal
 
 def test_data_parallel():
     # test gluon.contrib.parallel.DataParallelModel
@@ -127,36 +128,44 @@ def _checkBatchNormResult(bn1, bn2, input, cuda=False):
         input1 = input.as_in_context(mx.gpu(0))
         bn1.collect_params().reset_ctx(mx.gpu(0))
 
+    input1.attach_grad()
+    input2.attach_grad()
+
     with mx.autograd.record():
         output1 = bn1(input1)
         output2 = bn2(input2)
         loss1 = (output1 ** 2).sum()
-        loss2 = [(output ** 2).sum() for output in output2]
+        #loss2 = (output2 ** 2).sum()
+        loss2 = [(output[0] ** 2).sum() for output in output2]
         mx.autograd.backward(loss1)
         mx.autograd.backward(loss2)
 
+    output2 = mx.nd.concat(*[output[0].as_in_context(input.context) for output in output2], dim=0)
     # assert forwarding
     _assert_tensor_close(input1, input2)
     _assert_tensor_close(output1, output2)
+    #print('input1.grad', input1.grad)
+    #print('input2.grad', input2.grad)
     _assert_tensor_close(input1.grad, input2.grad)
     _assert_tensor_close(_find_bn(bn1).running_mean, _find_bn(bn2).running_mean)
     _assert_tensor_close(_find_bn(bn1).running_var, _find_bn(bn2).running_var)
 
 
 def testSyncBN():
-    bn = nn.BatchNorm(in_channels=10)
-    sync_bn = SyncBatchNorm(in_channels=10)
+    nGPUs = 1#len(test_utils.list_gpus())
+
+    bn = nn.BatchNorm(in_channels=1)
+    sync_bn = SyncBatchNorm(in_channels=1, nGPUs=nGPUs)
 
     bn.initialize()
     sync_bn.initialize()
-    nGPUs = len(test_utils.list_gpus())
     ctx_list = [mx.gpu(i) for i in range(nGPUs)]
     sync_bn = DataParallelModel(sync_bn, sync=True, ctx_list=ctx_list)
 
     # check with unsync version
     for i in range(10):
         print(i)
-        _checkBatchNormResult(bn, sync_bn, nd.random.uniform(shape=(16, 10, 16, 16)), cuda=True)
+        _checkBatchNormResult(bn, sync_bn, nd.random.uniform(shape=(4, 1, 4, 4)), cuda=True)
 
 if __name__ == "__main__":
     testSyncBN()

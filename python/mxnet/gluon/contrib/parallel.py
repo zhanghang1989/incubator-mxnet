@@ -23,8 +23,9 @@ from ...ndarray import AllReduce, NDArray
 from ..utils import split_and_load
 from ..nn import BatchNorm
 from ... import test_utils
+from ...autograd import Function
 
-__all__ = ['DataParallelModel', 'DataParallelLoss', 'SyncBatchNorm', 'Barrier']
+__all__ = ['DataParallelModel', 'DataParallelLoss', 'SyncBatchNorm']
 
 
 class DataParallelModel(object):
@@ -149,38 +150,25 @@ class DataParallelLoss(object):
         return loss_parallel_apply(self.module, inputs, targets, kwargs, self.sync)
 
 
-class Barrier(object):
-    """Barrier for cross-device operation.
-
-    A cross device operation that allows synchronized push and pull. It can be used in
-    Cross-gpu Sycnhronized Batch Normalization.
-
-    Parameters
-    ----------
-    counter : int
-        Number of deivces.
-    operation : callable
-        The cross device operation is applying (e.g. AllReduce).
-    """
-    def __init__(self, counter, operation):
-        self._mutex = threading.Lock()
-        self.all_tasks_done = threading.Condition(self._mutex)
-        self.counter = counter
-        self.op = operation
+class _SharedTensor(object):
+    def __init__(self, nGPUs):
+        self.mutex = threading.Lock()
+        self.all_tasks_done = threading.Condition(self.mutex)
+        self.nGPUs = nGPUs
         self._clear()
 
-    def __call__(self, x):
-        """Push a NDArray from one of the device.
-        Input:
-            x (NDArray)
+    def _clear(self):
+        self.list = []
+        self.push_tasks = self.nGPUs
+        self.reduce_tasks = self.nGPUs
 
-        Output:
-            idx (int), the output index
-        """
-        with self._mutex:
+    def push(self, t):
+        """push to _SharedTensor"""
+        with self.mutex:
             if self.push_tasks == 0:
                 self._clear()
-            self.list.append(x)
+            t.wait_to_read()
+            self.list.append(t)
             idx = len(self.list) - 1
             self.push_tasks -= 1
 
@@ -189,20 +177,17 @@ class Barrier(object):
                 self.all_tasks_done.notify_all()
             while self.push_tasks:
                 self.all_tasks_done.wait()
+        return idx
 
-        self._sync_op()
-        return self.out[idx]
-
-    def _sync_op(self):
-        with self._mutex:
+    def _reduce(self):
+        with self.mutex:
             if self.reduce_tasks == 1:
-                assert(len(self.list) == self.counter)
-                self.out = self.op(*self.list)
-                if isinstance(self.out, (list, tuple)):
-                    for xi in self.out:
-                        xi.wait_to_read()
-                else:
-                    self.out.wait_to_read()
+                assert(len(self.list) == self.nGPUs)
+                self.list = AllReduce(*self.list)
+                for xi in self.list:
+                    # mannually attach grad to avoid wrong allocation
+                    xi.attach_grad()
+                    xi.wait_to_read()
                 self.reduce_tasks -= 1
             else:
                 self.reduce_tasks -= 1
@@ -213,16 +198,19 @@ class Barrier(object):
             while self.reduce_tasks:
                 self.all_tasks_done.wait()
 
-    def _clear(self):
-        self.list = []
-        self.push_tasks = self.counter
-        self.reduce_tasks = self.counter
+    def get(self, idx):
+        """Get form _SharedTensor"""
+        self._reduce()
+        return self.list[idx]
+
+    def test(self):
+        print('self.list', self.list)
 
     def __len__(self):
         return len(self.list)
 
     def __repr__(self):
-        return 'Barrier'
+        return '_SharedTensor'
 
 
 class SyncBatchNorm(BatchNorm):
@@ -289,8 +277,10 @@ class SyncBatchNorm(BatchNorm):
 
         if nGPUs is None:
             nGPUs = self._get_nGPUs()
-        self.xsum = Barrier(nGPUs, AllReduce)
-        self.xsqu = Barrier(nGPUs, AllReduce)
+        #self.xsum = Barrier(nGPUs, AllReduce)
+        #self.xsqu = Barrier(nGPUs, AllReduce)
+        self.xsum = _SharedTensor(nGPUs)
+        self.xsqu = _SharedTensor(nGPUs)
         self.updater = _SharedUpdater(nGPUs)
 
     def _get_nGPUs(self):
@@ -306,9 +296,13 @@ class SyncBatchNorm(BatchNorm):
             return F.BatchNorm(x, gamma, beta, running_mean, running_var, name='fwd',
                                **self._kwargs)
         isum, isqu = F.SumSquare(x)
+        #isum = x.sum(axis=1, exclude=True)
+        #isqu = (x**2).sum(axis=1, exclude=True)
         # reduce sum for E(x) and E(x^2)
-        osum = self.xsum(isum)
-        osqu = self.xsqu(isqu)
+        id1 = self.xsum.push(isum)
+        id2 = self.xsqu.push(isqu)
+        osum = self.xsum.get(id1)
+        osqu = self.xsqu.get(id2)
         assert len(self.xsum) == len(self.xsqu)
         N = len(self.xsum)*x.shape[0]*x.shape[2]*x.shape[3]
         # calc mean and std
@@ -317,12 +311,17 @@ class SyncBatchNorm(BatchNorm):
         bias_var = sumvar / N
         std = F.sqrt(F.clip(bias_var, a_min=self.eps, a_max=bias_var.max().asscalar()))
         # update running mean and var
+        """
         with autograd.pause():
             unbias_var = sumvar / (N - 1)
             ctx = x.context
             self.updater(self.running_mean, self.running_var, mean, unbias_var,
                          self.momentum, ctx)
+        """
         return F.DecoupleBatchNorm(x, gamma, beta, mean, std)
+        #output = (x - mean.reshape(1, -1, 1, 1)) / std.reshape(1, -1, 1, 1) * \
+        #    gamma.reshape(1, -1, 1, 1) + beta.reshape(1, -1, 1, 1)
+        #return output
 
 
 class _SharedUpdater(object):

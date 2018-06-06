@@ -6229,6 +6229,8 @@ def test_all_reduce():
     assert len(X) == len(Y)
     for i in range(1, ndevice):
         assert np.allclose(Y[i].asnumpy(), Y[0].asnumpy(), rtol=1e-3, atol=1e-4)
+    for i in range(1, ndevice):
+        assert np.allclose(X[i].grad.asnumpy(), X[0].grad.asnumpy(), rtol=1e-3, atol=1e-4)
 
 if __name__ == '__main__':
     import nose
