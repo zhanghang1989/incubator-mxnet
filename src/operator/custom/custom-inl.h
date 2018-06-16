@@ -28,6 +28,7 @@
 #define MXNET_OPERATOR_CUSTOM_CUSTOM_INL_H_
 #include <dmlc/logging.h>
 #include <dmlc/parameter.h>
+#include <dmlc/blockingconcurrentqueue.h>
 #include <mxnet/operator.h>
 #include <mxnet/c_api.h>
 #include <mxnet/imperative.h>
@@ -90,8 +91,8 @@ class CustomOperator {
       ctx.async_on_complete();
       return;
     }
-    std::unique_lock<std::mutex> lock(mutex_);
-    q_.push([=]() mutable {
+    std::lock_guard<std::mutex> lock(mutex_);
+    q_.enqueue([=]() mutable {
       bool prev_recording = Imperative::Get()->set_is_recording(recording);
       bool prev_training = Imperative::Get()->set_is_training(training);
 
@@ -129,17 +130,15 @@ class CustomOperator {
           ctx.run_ctx.ctx, vars, vars2, FnProperty::kNormal, 0,
           "CustomOperator");
     });
-    cv_.notify_all();
   }
 
   ~CustomOperator() {
     if (naive_engine_) return;
     {
-      std::unique_lock<std::mutex> lock(mutex_);
+      std::lock_guard<std::mutex> lock(mutex_);
       destructing_ = true;
-      cv_.notify_all();
     }
-    worker_.join();
+    for (size_t i = 0; i < workers_.size(); i++) workers_[i].join();
   }
 
   static CustomOperator* Get();
@@ -149,29 +148,27 @@ class CustomOperator {
     destructing_ = false;
     naive_engine_ = true;
     if (std::string("NaiveEngine") != dmlc::GetEnv("MXNET_ENGINE_TYPE", std::string())) {
+      static size_t num_workers = dmlc::GetEnv("MXNET_CUSTOM_OP_NWORKER", 1);
+      static int64_t wait_usec = dmlc::GetEnv("MXNET_CUSTOM_OP_WAIT_TIME", 100000);
       naive_engine_ = false;
-      worker_ = std::thread(
-        [&]() {
-          std::unique_lock<std::mutex> lock(mutex_);
-          while (!q_.empty() || !destructing_) {
-            cv_.wait(lock, [&] {return !q_.empty() || destructing_;});
-            while (!q_.empty()) {
-              auto fn = q_.front();
-              lock.unlock();
-              fn();
-              lock.lock();
-              q_.pop();
+      for (size_t i = 0; i < num_workers; i++) {
+        workers_.emplace_back(
+          [&]() {
+            while (true) {
+              std::function<void(void)> fn;
+              bool success = q_.wait_dequeue_timed(fn, wait_usec);
+              if (!success && destructing_) break;
+              if (success) fn();
             }
-          }
-        });
+          });
+      }
     }
   }
   std::mutex mutex_;
   std::map<std::string, CustomOpPropCreator> registry_;
-  // async worker
-  std::condition_variable cv_;
-  std::thread worker_;
-  std::queue<std::function<void(void)> > q_;
+  // async workers
+  std::vector<std::thread> workers_;
+  dmlc::moodycamel::BlockingConcurrentQueue<std::function<void(void)> > q_;
   bool naive_engine_;
   bool destructing_;
 };
