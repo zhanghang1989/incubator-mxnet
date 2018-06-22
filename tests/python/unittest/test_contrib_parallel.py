@@ -113,7 +113,7 @@ def _checkBatchNormResult(bn1, bn2, input, cuda=False):
 
     def _syncParameters(bn1, bn2):
         ctx = input.context
-        bn2.gamma.set_data(bn1.gamma.data(ctx))
+        bn2.gamma.set_data(bn1.gamma.data(mx.cpu(0)))
         bn2.beta.set_data(bn1.beta.data(ctx))
         bn2.running_mean.set_data(bn1.running_mean.data(ctx))
         bn2.running_var.set_data(bn1.running_var.data(ctx))
@@ -122,7 +122,7 @@ def _checkBatchNormResult(bn1, bn2, input, cuda=False):
     input2 = input.copy()
 
     # using the same values for gamma and beta
-    _syncParameters(_find_bn(bn1), _find_bn(bn2))
+    #_syncParameters(_find_bn(bn1), _find_bn(bn2))
 
     if cuda:
         input1 = input.as_in_context(mx.gpu(0))
@@ -136,31 +136,33 @@ def _checkBatchNormResult(bn1, bn2, input, cuda=False):
         output2 = bn2(input2)
         loss1 = (output1 ** 2).sum()
         #loss2 = (output2 ** 2).sum()
-        loss2 = [(output[0] ** 2).sum() for output in output2]
-        mx.autograd.backward(loss1)
-        mx.autograd.backward(loss2)
+        #loss2 = [(output[0] ** 2).sum() for output in output2]
+        mx.autograd.backward(output1)
+        parallel_backward(output2)
 
     output2 = mx.nd.concat(*[output[0].as_in_context(input.context) for output in output2], dim=0)
     # assert forwarding
+    print('output1', output1)
+    print('output2', output2)
     _assert_tensor_close(input1, input2)
     _assert_tensor_close(output1, output2)
     #print('input1.grad', input1.grad)
     #print('input2.grad', input2.grad)
     _assert_tensor_close(input1.grad, input2.grad)
-    _assert_tensor_close(_find_bn(bn1).running_mean, _find_bn(bn2).running_mean)
-    _assert_tensor_close(_find_bn(bn1).running_var, _find_bn(bn2).running_var)
+    _assert_tensor_close(_find_bn(bn1).running_mean.data(mx.gpu(0)), _find_bn(bn2).running_mean.data(mx.gpu(0)))
+    _assert_tensor_close(_find_bn(bn1).running_var.data(mx.gpu(0)), _find_bn(bn2).running_var.data(mx.gpu(0)))
 
 
 def testSyncBN():
-    nGPUs = 1#len(test_utils.list_gpus())
+    nGPUs = 2#len(test_utils.list_gpus())
 
     bn = nn.BatchNorm(in_channels=1)
-    sync_bn = SyncBatchNorm(in_channels=1, nGPUs=nGPUs)
+    sync_bn = SyncBatchNorm(in_channels=1, ndevices=nGPUs)
 
     bn.initialize()
     sync_bn.initialize()
     ctx_list = [mx.gpu(i) for i in range(nGPUs)]
-    sync_bn = DataParallelModel(sync_bn, sync=True, ctx_list=ctx_list)
+    sync_bn = DataParallelModel(sync_bn, ctx_list=ctx_list, sync=True)
 
     # check with unsync version
     for i in range(10):
