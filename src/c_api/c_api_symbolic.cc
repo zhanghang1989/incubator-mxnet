@@ -22,12 +22,12 @@
  * \file c_api_symbolic.cc
  * \brief C API of mxnet
  */
-#include <mxnet/base.h>
-#include <mxnet/c_api.h>
-#include <nnvm/c_api.h>
-#include <nnvm/pass.h>
-#include <nnvm/pass_functions.h>
-#include <nnvm/symbolic.h>
+#include "mxnet/base.h"
+#include "mxnet/c_api.h"
+#include "nnvm/c_api.h"
+#include "nnvm/pass.h"
+#include "nnvm/pass_functions.h"
+#include "nnvm/symbolic.h"
 #include "./c_api_common.h"
 #include "../operator/operator_common.h"
 #include "../executor/exec_pass.h"
@@ -269,8 +269,8 @@ int MXSymbolListAttr(SymbolHandle symbol,
   }
   *out_size = attr_list.size()/2;
   ret->ret_vec_charp.clear();
-  for (size_t i = 0; i < attr_list.size(); ++i) {
-    ret->ret_vec_charp.push_back(attr_list[i].c_str());
+  for (const auto& attr : attr_list) {
+    ret->ret_vec_charp.push_back(attr.c_str());
   }
   *out = dmlc::BeginPtr(ret->ret_vec_charp);
   API_END();
@@ -298,8 +298,8 @@ int MXSymbolListAttrShallow(SymbolHandle symbol,
   }
   *out_size = attr_list.size()/2;
   ret->ret_vec_charp.clear();
-  for (size_t i = 0; i < attr_list.size(); ++i) {
-    ret->ret_vec_charp.push_back(attr_list[i].c_str());
+  for (auto &attr : attr_list) {
+    ret->ret_vec_charp.push_back(attr.c_str());
   }
   *out = dmlc::BeginPtr(ret->ret_vec_charp);
   API_END();
@@ -668,7 +668,6 @@ int MXQuantizeSymbol(SymbolHandle sym_handle,
   g.attrs["excluded_nodes"] = std::make_shared<nnvm::any>(std::move(excluded_node_names));
   g.attrs["offline_params"] = std::make_shared<nnvm::any>(std::move(offline));
   g.attrs["quantized_dtype"] = std::make_shared<nnvm::any>(std::move(quantized_type));
-  g.attrs["calib_quantize"] = std::make_shared<nnvm::any>(calib_quantize);
   g = ApplyPass(std::move(g), "QuantizeGraph");
   s->outputs = g.outputs;
   *ret_sym_handle = s;
@@ -685,10 +684,9 @@ int MXSetCalibTableToQuantizedSymbol(SymbolHandle qsym_handle,
   API_BEGIN();
   nnvm::Symbol* sym = static_cast<nnvm::Symbol*>(qsym_handle);
   nnvm::Graph g = Symbol2Graph(*sym);
-  const std::string prefix = "quantized_";
   std::unordered_map<std::string, std::pair<float, float>> calib_table;
   for (size_t i = 0; i < num_layers; ++i) {
-    calib_table.emplace(prefix+layer_names[i], std::make_pair(min_ranges[i], max_ranges[i]));
+    calib_table.emplace(layer_names[i], std::make_pair(min_ranges[i], max_ranges[i]));
   }
   g.attrs["calib_table"] = std::make_shared<nnvm::any>(std::move(calib_table));
   g = ApplyPass(std::move(g), "SetCalibTableToQuantizedGraph");

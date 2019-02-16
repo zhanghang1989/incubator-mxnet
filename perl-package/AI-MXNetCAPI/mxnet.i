@@ -344,12 +344,22 @@ int MXGetGPUCount(int* out);
 
 /*!
  * \brief get the free and total available memory on a GPU
+ *  Note: deprecated, use MXGetGPUMemoryInformation64().
  * \param dev the GPU number to query
  * \param free_mem pointer to the integer holding free GPU memory
  * \param total_mem pointer to the integer holding total GPU memory
  * \return 0 when success, -1 when failure happens
  */
 int MXGetGPUMemoryInformation(int dev, int *out, int *out);
+
+/*!
+ * \brief get the free and total available memory on a GPU
+ * \param dev the GPU number to query
+ * \param free_mem pointer to the uint64_t holding free GPU memory
+ * \param total_mem pointer to the uint64_t holding total GPU memory
+ * \return 0 when success, -1 when failure happens
+ */
+int MXGetGPUMemoryInformation64(int dev, uint64_t *out, uint64_t *out);
 
 
 //-------------------------------------
@@ -1608,6 +1618,7 @@ int MXExecutorReshape(int partial_shaping,
 int MXExecutorSetMonitorCallback(ExecutorHandle handle,
                                            ExecutorMonitorCallback callback,
                                            void* callback_handle);
+
 //--------------------------------------------
 // Part 5: IO Interface
 //--------------------------------------------
@@ -2157,4 +2168,3 @@ int MXRtcCudaKernelCall(CudaKernelHandle handle, int dev_id, void** cuda_kernel_
                                   mx_uint grid_dim_z, mx_uint block_dim_x,
                                   mx_uint block_dim_y, mx_uint block_dim_z,
                                   mx_uint shared_mem);
-
