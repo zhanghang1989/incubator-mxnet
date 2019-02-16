@@ -704,7 +704,7 @@ class HybridLambda(HybridBlock):
                                            function=self._func_name)
 
 
-class GroupNorm(Block):
+class GroupNorm(HybridBlock):
     """GroupNorm normalization layer (Wu and He, 2014).
     Parameters
     ----------
@@ -748,31 +748,26 @@ class GroupNorm(Block):
                                     shape=(in_channels,), init=beta_initializer,
                                     allow_deferred_init=True, differentiable=True)
         # hacky
-        self.hacky_zeros = self.params.get('hacky_zeros', grad_req='null',
-                                           shape=(ngroups,), init='zeros',
-                                           allow_deferred_init=True, differentiable=False)
-        self.hacky_ones = self.params.get('hacky_ones', grad_req='null',
-                                          shape=(ngroups,), init='ones',
-                                          allow_deferred_init=True, differentiable=False)
- 
+        self.inited = False
 
     def cast(self, dtype):
         if np.dtype(dtype).name == 'float16':
             dtype = 'float32'
         super(GroupNorm, self).cast(dtype)
 
-    def forward(self, x):
-        xshape = x.shape
+    def hybrid_forward(self, F, x):
+        hacky_zeros = F.zeros(self.ngroups, ctx=x.context())
+        hacky_ones = F.ones(self.ngroups, ctx=x.context())
         # normalization
         with autograd.train_mode():
-            y = nd.BatchNorm(x.reshape(xshape[0], self.ngroups, -1),
-                             self.hacky_ones.data(), self.hacky_zeros.data(),
-                             self.hacky_zeros.data(), self.hacky_ones.data(),
+            y = F.BatchNorm(x.reshape(0, self.ngroups, -1),
+                             hacky_ones, hacky_zeros,
+                             hacky_zeros, hacky_ones,
                              name='fwd', **self._kwargs)
         # scale and shift
-        y = y.reshape(xshape[0], xshape[1], -1)
+        y = y.reshape(0, self.in_channels, -1)
         y = y * self.gamma.data().reshape(1, -1, 1) + self.beta.data().reshape(1, -1, 1)
-        return y.reshape(xshape)
+        return y.reshape_like(x)
 
     def __repr__(self):
         s = '{name}({content}'
