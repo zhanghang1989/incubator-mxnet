@@ -760,16 +760,16 @@ class GroupNorm(HybridBlock):
         super(GroupNorm, self).cast(dtype)
 
     def hybrid_forward(self, F, x):
-        hacky_zeros = F.zeros(self.ngroups, ctx=x.context())
-        hacky_ones = F.ones(self.ngroups, ctx=x.context())
         # normalization
         with autograd.train_mode():
-            y = F.BatchNorm(x.reshape(0, self.ngroups, -1),
-                             hacky_ones, hacky_zeros,
-                             hacky_zeros, hacky_ones,
-                             name='fwd', **self._kwargs)
+            y = F.BatchNorm(x.reshape(-4, 1, self.ngroups, -1).reshape(1, -3, -2),
+                            F.ones(self.ngroups, ctx=x.context()),
+                            F.zeros(self.ngroups, ctx=x.context()),
+                            F.zeros(self.ngroups, ctx=x.context()),
+                            F.ones(self.ngroups, ctx=x.context()),
+                            name='fwd', **self._kwargs)
         # scale and shift
-        y = y.reshape(0, self.in_channels, -1)
+        y = y.reshape_like(x).reshape(0, 0, -1)
         y = y * self.gamma.data().reshape(1, -1, 1) + self.beta.data().reshape(1, -1, 1)
         return y.reshape_like(x)
 
